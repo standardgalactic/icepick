@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RSVP Field Growth</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #000;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #ui {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+      z-index: 10;
+    }
+
+    .btn {
+      background: rgba(0, 255, 140, 0.07);
+      border: 0.5px solid rgba(0, 255, 140, 0.28);
+      color: rgba(0, 255, 140, 0.75);
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      padding: 5px 12px;
+      cursor: pointer;
+      border-radius: 2px;
+      transition: background 0.15s, border-color 0.15s;
+      letter-spacing: 0.04em;
+      user-select: none;
+    }
+
+    .btn:hover {
+      background: rgba(0, 255, 140, 0.16);
+      border-color: rgba(0, 255, 140, 0.5);
+    }
+
+    .btn:active {
+      background: rgba(0, 255, 140, 0.25);
+    }
+
+    #info {
+      position: fixed;
+      bottom: 12px;
+      left: 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 10px;
+      color: rgba(0, 255, 140, 0.3);
+      line-height: 1.7;
+      z-index: 10;
+      letter-spacing: 0.03em;
+    }
+
+    #title-block {
+      position: fixed;
+      top: 14px;
+      left: 14px;
+      z-index: 10;
+    }
+
+    #title-block h1 {
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      font-weight: normal;
+      color: rgba(0, 255, 140, 0.22);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="title-block">
+  <h1>RSVP Field Growth<br>v(x,y,t) · trace history · Φ/S/v</h1>
+</div>
+
+<div id="ui">
+  <button class="btn" id="btn-reset">reset field</button>
+  <button class="btn" id="btn-mode">mode: swirl</button>
+  <button class="btn" id="btn-collapse">collapse operator</button>
+</div>
+
+<div id="info">
+  <span id="info-traces">traces: 0</span><br>
+  <span id="info-field">field: t=0.00 &nbsp; mode: swirl</span><br>
+  <span>click to inject &nbsp;·&nbsp; drag to seed</span>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+
+  let W, H, fieldTime = 0, traces = [];
+  let mode = 0;
+  const modes = ['swirl', 'lattice', 'radial'];
+  let collapsed = false;
+  let collapseTimer = null;
+
+  // ── resize ──────────────────────────────────────────────────────────────────
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+  }
+
+  window.addEventListener('resize', () => { resize(); });
+  resize();
+
+  // ── vector field  v(x, y, t) ─────────────────────────────────────────────
+
+  function vectorField(x, y, t) {
+    const nx = x / W - 0.5;
+    const ny = y / H - 0.5;
+    let angle, mag;
+
+    if (mode === 0) {
+      // swirl + temporal drift
+      angle =
+        Math.atan2(ny, nx) +
+        Math.sin(nx * 6 + t * 0.5) * 0.6 +
+        Math.cos(ny * 6 - t * 0.4) * 0.5;
+      mag = 0.6 + 0.4 * Math.sin((nx * nx + ny * ny) * 10 + t);
+
+    } else if (mode === 1) {
+      // lattice interference
+      angle =
+        Math.sin(nx * 8 + t * 0.3) * Math.PI +
+        Math.cos(ny * 8 - t * 0.2) * Math.PI;
+      mag = 0.7 + 0.3 * Math.cos(nx * ny * 12 + t);
+
+    } else {
+      // radial spiral
+      const r = Math.sqrt(nx * nx + ny * ny);
+      angle = Math.atan2(ny, nx) + Math.PI / 2 + r * 4 + t * 0.4;
+      mag = 0.5 + 0.5 * Math.sin(r * 8 - t * 0.8);
+    }
+
+    return { vx: Math.cos(angle) * mag, vy: Math.sin(angle) * mag };
+  }
+
+  // ── interaction force  (short-range repulsion, long-range attraction) ─────
+
+  function interactionForce(x, y) {
+    let fx = 0, fy = 0;
+    // sample subset to avoid O(n²) blowout
+    const alive = traces.filter(t => t.alive);
+    const step = alive.length > 60 ? Math.ceil(alive.length / 60) : 1;
+    for (let i = 0; i < alive.length; i += step) {
+      const tr = alive[i];
+      const dx = tr.x - x;
+      const dy = tr.y - y;
+      const d2 = dx * dx + dy * dy + 0.1;
+      const dist = Math.sqrt(d2);
+      const force = (dist < 80 ? -1 : 0.15) / d2;
+      fx += dx * force;
+      fy += dy * force;
+    }
+    return { fx, fy };
+  }
+
+  // ── trace factory ─────────────────────────────────────────────────────────
+
+  function makeTrace(x, y, energy) {
+    return {
+      x, y,
+      history: [{ x, y }],
+      energy: energy != null ? energy : 1.0,
+      alive: true,
+      age: 0
+    };
+  }
+
+  // ── simulation step ───────────────────────────────────────────────────────
+
+  const MAX_HISTORY = 200;
+  const MAX_TRACES  = 280;
+
+  function step() {
+    const newTraces = [];
+
+    for (const tr of traces) {
+      if (!tr.alive) continue;
+      tr.age++;
+
+      const { x, y } = tr;
+      const v = vectorField(x, y, fieldTime);
+      const f = interactionForce(x, y);
+
+      let vx = v.vx + f.fx * 180;
+      let vy = v.vy + f.fy * 180;
+
+      const len = Math.sqrt(vx * vx + vy * vy) + 0.0001;
+      const speed = 1.8 + tr.energy * 0.8;
+
+      const nx = x + (vx / len) * speed;
+      const ny = y + (vy / len) * speed;
+
+      tr.history.push({ x: nx, y: ny });
+      if (tr.history.length > MAX_HISTORY) tr.history.shift();
+
+      tr.x = nx;
+      tr.y = ny;
+      tr.energy *= collapsed ? 0.970 : 0.9965;
+
+      // branching — rare, energy-gated
+      if (Math.random() < 0.018 && tr.energy > 0.35 && newTraces.length < 5) {
+        newTraces.push(makeTrace(
+          nx + (Math.random() - 0.5) * 4,
+          ny + (Math.random() - 0.5) * 4,
+          tr.energy * 0.7
+        ));
+      }
+
+      // death
+      if (
+        tr.energy < 0.04 ||
+        nx < -20 || nx > W + 20 ||
+        ny < -20 || ny > H + 20
+      ) {
+        tr.alive = false;
+      }
+    }
+
+    traces.push(...newTraces);
+
+    // prune dead traces that have fully faded
+    traces = traces.filter(t => t.alive || t.history.length > 1);
+
+    // cap population
+    if (traces.length > MAX_TRACES) {
+      traces = traces.slice(traces.length - MAX_TRACES);
+    }
+  }
+
+  // ── draw ──────────────────────────────────────────────────────────────────
+
+  function draw() {
+    // phosphor persistence
+    ctx.fillStyle = 'rgba(0,0,0,0.055)';
+    ctx.fillRect(0, 0, W, H);
+
+    for (const tr of traces) {
+      const h = tr.history;
+      if (h.length < 2) continue;
+
+      const bright = Math.min(1, tr.energy * 1.8);
+      const g = Math.round(200 + bright * 55);
+
+      ctx.beginPath();
+      ctx.moveTo(h[0].x, h[0].y);
+      for (let i = 1; i < h.length; i++) ctx.lineTo(h[i].x, h[i].y);
+
+      ctx.strokeStyle = `rgba(0,${g},120,${0.12 + bright * 0.55})`;
+      ctx.lineWidth = 0.5 + tr.energy * 1.6;
+      ctx.stroke();
+
+      // tip glow
+      const last = h[h.length - 1];
+      ctx.beginPath();
+      ctx.arc(last.x, last.y, 1 + tr.energy, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(80,255,160,${bright * 0.55})`;
+      ctx.fill();
+    }
+
+    // CRT scanlines
+    ctx.fillStyle = 'rgba(0,255,120,0.022)';
+    for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+
+    // HUD
+    const alive = traces.filter(t => t.alive).length;
+    document.getElementById('info-traces').textContent = `traces: ${alive}`;
+    document.getElementById('info-field').textContent =
+      `field: t=${fieldTime.toFixed(2)}   mode: ${modes[mode]}`;
+  }
+
+  // ── seed / inject ─────────────────────────────────────────────────────────
+
+  function seed() {
+    traces = [];
+    for (let i = 0; i < 7; i++) {
+      traces.push(makeTrace(
+        W * 0.25 + Math.random() * W * 0.5,
+        H * 0.25 + Math.random() * H * 0.5
+      ));
+    }
+  }
+
+  function inject(cx, cy, n) {
+    for (let i = 0; i < (n || 4); i++) {
+      traces.push(makeTrace(
+        cx + (Math.random() - 0.5) * 20,
+        cy + (Math.random() - 0.5) * 20
+      ));
+    }
+  }
+
+  // ── main loop ─────────────────────────────────────────────────────────────
+
+  function animate() {
+    fieldTime += 0.008;
+    step();
+    draw();
+
+    // auto-reseed if population collapses
+    if (traces.filter(t => t.alive).length < 4) {
+      for (let i = 0; i < 3; i++) {
+        traces.push(makeTrace(
+          W / 2 + (Math.random() - 0.5) * 200,
+          H / 2 + (Math.random() - 0.5) * 160
+        ));
+      }
+    }
+
+    requestAnimationFrame(animate);
+  }
+
+  // ── interaction ───────────────────────────────────────────────────────────
+
+  function canvasCoords(e) {
+    const r = canvas.getBoundingClientRect();
+    const sx = W / (r.right - r.left);
+    const sy = H / (r.bottom - r.top);
+    return {
+      x: (e.clientX - r.left) * sx,
+      y: (e.clientY - r.top) * sy
+    };
+  }
+
+  canvas.addEventListener('click', e => {
+    const { x, y } = canvasCoords(e);
+    inject(x, y, 5);
+  });
+
+  let dragging = false;
+  canvas.addEventListener('mousedown', () => dragging = true);
+  canvas.addEventListener('mouseup',   () => dragging = false);
+  canvas.addEventListener('mouseleave',() => dragging = false);
+  canvas.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    if (Math.random() < 0.35) {
+      const { x, y } = canvasCoords(e);
+      inject(x, y, 1);
+    }
+  });
+
+  // touch support
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.touches[0];
+    const { x, y } = canvasCoords(t);
+    inject(x, y, 5);
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (Math.random() < 0.4) {
+      const t = e.touches[0];
+      const { x, y } = canvasCoords(t);
+      inject(x, y, 1);
+    }
+  }, { passive: false });
+
+  // ── controls ──────────────────────────────────────────────────────────────
+
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    seed();
+  });
+
+  document.getElementById('btn-mode').addEventListener('click', function () {
+    mode = (mode + 1) % modes.length;
+    this.textContent = 'mode: ' + modes[mode];
+  });
+
+  document.getElementById('btn-collapse').addEventListener('click', function () {
+    if (collapseTimer) return; // already running
+    collapsed = true;
+    this.textContent = 'collapse: ON';
+    collapseTimer = setTimeout(() => {
+      collapsed = false;
+      this.textContent = 'collapse operator';
+      collapseTimer = null;
+    }, 3000);
+  });
+
+  // ── init ─────────────────────────────────────────────────────────────────
+
+  seed();
+  animate();
+
+})();
+</script>
+</body>
+</html>
