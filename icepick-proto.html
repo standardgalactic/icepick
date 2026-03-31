@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ICEPICK — Tutorial Level 1</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --green: #00ff88;
+    --green-dim: rgba(0,255,136,0.18);
+    --green-mid: rgba(0,255,136,0.45);
+    --amber: #ffaa00;
+    --red: #ff4444;
+    --bg: #000;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--green);
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+    user-select: none;
+  }
+
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    image-rendering: pixelated;
+  }
+
+  /* CRT scanline overlay */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0,255,100,0.03),
+      rgba(0,255,100,0.03) 2px,
+      transparent 2px,
+      transparent 4px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* CRT vignette */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center,
+      transparent 60%,
+      rgba(0,0,0,0.7) 100%
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  #hud {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    background: rgba(0,0,0,0.85);
+    border-bottom: 1px solid var(--green-dim);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    z-index: 50;
+  }
+
+  #hud-left { color: var(--green); text-shadow: 0 0 8px var(--green); }
+  #hud-center { color: var(--green-mid); }
+  #hud-right { color: var(--amber); text-shadow: 0 0 6px var(--amber); }
+
+  #message {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    padding: 10px 16px;
+    background: rgba(0,0,0,0.9);
+    border-top: 1px solid var(--green-dim);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    line-height: 1.6;
+    z-index: 50;
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+
+  #msg-text { color: var(--green); flex: 1; }
+  #msg-keys {
+    color: var(--green-mid);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .key {
+    display: inline-block;
+    border: 1px solid var(--green-mid);
+    padding: 0 4px;
+    border-radius: 2px;
+    font-size: 10px;
+    color: var(--green);
+  }
+
+  #mode-flash {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 48px;
+    letter-spacing: 0.3em;
+    color: var(--green);
+    text-shadow: 0 0 40px var(--green);
+    pointer-events: none;
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="screen"></canvas>
+
+<div id="hud">
+  <div id="hud-left">ICEPICK v0.1 &nbsp;·&nbsp; <span id="mode-label">MODE: FP</span></div>
+  <div id="hud-center" id="path-label">LEVEL: movement / room-1</div>
+  <div id="hud-right"><span id="score-label">lines: 0 removed</span></div>
+</div>
+
+<div id="message">
+  <div id="msg-text">You are inside the world. Use <span class="key">h</span> <span class="key">j</span> <span class="key">k</span> <span class="key">l</span> to move. <span class="key">w</span><span class="key">s</span> walk forward/back. <span class="key">a</span><span class="key">d</span> turn.</div>
+  <div id="msg-keys"><span class="key">Tab</span> switch view &nbsp; <span class="key">1</span><span class="key">2</span><span class="key">3</span> direct mode &nbsp; <span class="key">Bksp</span> exit room &nbsp; <span class="key">dd</span> demolish line</div>
+</div>
+
+<div id="mode-flash"></div>
+
+<script>
+(function() {
+"use strict";
+
+// ─── CANVAS SETUP ────────────────────────────────────────────────────────────
+
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ─── LEVEL DATA ──────────────────────────────────────────────────────────────
+// Lines are the geometry. Indentation = left wall depth. Length = corridor width.
+// Blank lines = open space (gaps to walk through).
+// The player walks along y (line index) and x (character position).
+
+const ROOMS = {
+  root: {
+    name: "root",
+    description: "The entrance. Three rooms wait.",
+    children: { "movement": null, "demolition": null, "words": null },
+    files: []
+  },
+
+  movement: {
+    name: "movement / room-1",
+    description: "Learn to walk. hjkl are your legs.",
+    children: {},
+    files: [
+      {
+        name: "intro.txt",
+        content: [
+          "                                        ",
+          "    ████████████████████████████████    ",
+          "    █                              █    ",
+          "    █   Walk with h j k l.         █    ",
+          "    █                              █    ",
+          "    █   h = left    l = right      █    ",
+          "    █   k = up      j = down       █    ",
+          "    █                              █    ",
+          "    █████████████   ███████████████    ",
+          "                                        ",
+          "              (pass through)            ",
+          "                                        ",
+          "    ████████████████████████████████    ",
+          "    █                              █    ",
+          "    █   You made it.               █    ",
+          "    █   Press Backspace to exit.   █    ",
+          "    █                              █    ",
+          "    ████████████████████████████████    ",
+          "                                        ",
+        ]
+      },
+      {
+        name: "practice.txt",
+        content: [
+          "                                                  ",
+          "  ██████████████████████████████████████████████  ",
+          "  █                                            █  ",
+          "  █  Navigate through the narrow passage       █  ",
+          "  █                                            █  ",
+          "  ████████████████     █████████████████████████  ",
+          "                                                  ",
+          "                    (gap)                         ",
+          "                                                  ",
+          "  ████████████████     █████████████████████████  ",
+          "  █                                            █  ",
+          "  █  Well done. You found the other side.      █  ",
+          "  █                                            █  ",
+          "  ██████████████████████████████████████████████  ",
+          "                                                  ",
+        ]
+      }
+    ]
+  },
+
+  demolition: {
+    name: "demolition / room-2",
+    description: "dd removes a line. Deleted lines become open space.",
+    children: {},
+    files: [
+      {
+        name: "wall.txt",
+        content: [
+          "                                                      ",
+          "  ████████████████████████████████████████████████  ",
+          "  █                                              █  ",
+          "  █   A wall blocks your path.                   █  ",
+          "  █   Stand near it and type  dd  to remove it.  █  ",
+          "  █                                              █  ",
+          "  ████████████████████████████████████████████████  ",
+          "  ████████████████████████████████████████████████  ",
+          "  ████████████████████████████████████████████████  ",
+          "  ████████████████████████████████████████████████  ",
+          "  ████████████████████████████████████████████████  ",
+          "                                                      ",
+          "  ████████████████████████████████████████████████  ",
+          "  █                                              █  ",
+          "  █   You broke through.                         █  ",
+          "  █   u to undo. dd to demolish again.           █  ",
+          "  █                                              █  ",
+          "  ████████████████████████████████████████████████  ",
+          "                                                      ",
+        ]
+      }
+    ]
+  },
+
+  words: {
+    name: "words / room-3",
+    description: "Coming soon: w and b for word navigation.",
+    children: {},
+    files: [
+      {
+        name: "placeholder.txt",
+        content: [
+          "                                        ",
+          "  ██████████████████████████████████   ",
+          "  █                              █     ",
+          "  █   This room is under         █     ",
+          "  █   construction.              █     ",
+          "  █                              █     ",
+          "  █   w = next word              █     ",
+          "  █   b = back word              █     ",
+          "  █                              █     ",
+          "  █   Coming soon.               █     ",
+          "  █                              █     ",
+          "  ██████████████████████████████████   ",
+          "                                        ",
+        ]
+      }
+    ]
+  }
+};
+
+// Build a simple world tree from ROOMS
+function buildWorld() {
+  const root = ROOMS.root;
+  root.children = {};
+  root.children['movement'] = ROOMS.movement;
+  root.children['demolition'] = ROOMS.demolition;
+  root.children['words'] = ROOMS.words;
+  return root;
+}
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+
+const world = buildWorld();
+
+const state = {
+  mode: 'fp',  // '2d' | 'fp' | 'terminal'
+  currentNode: world,
+  path: [],
+  player: { x: 5, y: 5, angle: 0 },
+  insideFile: null,
+  removedLines: new Set(),
+  history: [],
+  spawned: [],
+  vim: { pending: null, registers: {} },
+  lastCommand: null,
+  linesRemoved: 0,
+};
+
+// ─── MESSAGES ────────────────────────────────────────────────────────────────
+
+const MESSAGES = {
+  root:        "You are in the world. Use <span class='key'>h</span> <span class='key'>j</span> <span class='key'>k</span> <span class='key'>l</span> to move. Press <span class='key'>2</span> for map view. Press <span class='key'>Enter</span> near a room to enter.",
+  movement:    "This room teaches movement. Enter a file with <span class='key'>Enter</span>. Walk through the gap.",
+  demolition:  "This room teaches demolition. Enter the file. Type <span class='key'>d</span><span class='key'>d</span> near a wall to remove it.",
+  words:       "Word navigation — coming soon.",
+  insideFile:  "Walk with <span class='key'>h</span><span class='key'>j</span><span class='key'>k</span><span class='key'>l</span>. Type <span class='key'>d</span><span class='key'>d</span> to demolish the line you're on. <span class='key'>u</span> to undo. <span class='key'>Bksp</span> to exit.",
+};
+
+function setMessage(key) {
+  document.getElementById('msg-text').innerHTML = MESSAGES[key] || key;
+}
+
+// ─── TILE/CELL SIZE FOR 2D ───────────────────────────────────────────────────
+
+const TILE = 28;
+const CHAR_W = 9.6; // approx monospace char width at our font size
+
+// ─── 2D RENDERER ─────────────────────────────────────────────────────────────
+
+function render2D() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const node = state.currentNode;
+
+  if (state.insideFile) {
+    render2DFile();
+    return;
+  }
+
+  // Draw rooms as tiles
+  const dirs = Object.keys(node.children);
+  const files = node.files;
+  const all = [...dirs.map(d => ({ type:'dir', name:d })),
+               ...files.map(f => ({ type:'file', name:f.name, ref:f }))];
+
+  const cols = Math.max(1, Math.floor((W - 40) / (TILE * 4)));
+  const offX = 40;
+  const offY = 60;
+
+  all.forEach((item, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const tx = offX + col * (TILE * 4 + 20);
+    const ty = offY + row * (TILE * 3 + 20);
+    const tw = TILE * 4;
+    const th = TILE * 3;
+
+    // box
+    const isDir = item.type === 'dir';
+    ctx.strokeStyle = isDir ? '#ffaa00' : '#00ff88';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tx + 0.5, ty + 0.5, tw, th);
+
+    // label
+    ctx.font = '11px "Courier New"';
+    ctx.fillStyle = isDir ? '#ffaa00' : '#00ff88';
+    ctx.fillText((isDir ? '[D] ' : '[F] ') + item.name, tx + 8, ty + 20);
+
+    // description
+    if (isDir && ROOMS[item.name]) {
+      ctx.fillStyle = 'rgba(0,255,136,0.35)';
+      ctx.font = '9px "Courier New"';
+      const desc = ROOMS[item.name].description;
+      ctx.fillText(desc.slice(0, 36), tx + 8, ty + 36);
+    }
+
+    // store position for player proximity
+    item._tx = tx; item._ty = ty; item._tw = tw; item._th = th;
+    item._cx = tx + tw / 2; item._cy = ty + th / 2;
+  });
+
+  // Player dot
+  // Map player.x/y (0-10 world coords) to screen
+  const px = offX + (state.player.x / 10) * (W - offX * 2);
+  const py = offY + (state.player.y / 10) * (H - offY * 2 - 60);
+
+  // Glow
+  const grd = ctx.createRadialGradient(px, py, 0, px, py, 16);
+  grd.addColorStop(0, 'rgba(0,255,136,0.6)');
+  grd.addColorStop(1, 'rgba(0,255,136,0)');
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.arc(px, py, 16, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#00ff88';
+  ctx.beginPath();
+  ctx.arc(px, py, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Direction indicator
+  const dx2 = Math.cos(state.player.angle) * 12;
+  const dy2 = Math.sin(state.player.angle) * 12;
+  ctx.strokeStyle = 'rgba(0,255,136,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px + dx2, py + dy2);
+  ctx.stroke();
+
+  // Draw proximity highlights
+  all.forEach(item => {
+    const dist = Math.hypot(px - item._cx, py - item._cy);
+    if (dist < 60) {
+      ctx.strokeStyle = item.type === 'dir'
+        ? 'rgba(255,170,0,0.6)'
+        : 'rgba(0,255,136,0.6)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(item._tx + 0.5, item._ty + 0.5, item._tw, item._th);
+
+      ctx.fillStyle = 'rgba(0,255,136,0.55)';
+      ctx.font = '10px "Courier New"';
+      ctx.fillText('[ Enter ]', item._cx - 28, item._ty + item._th + 14);
+    }
+  });
+
+  // Path breadcrumb at top
+  ctx.fillStyle = 'rgba(0,255,136,0.3)';
+  ctx.font = '10px "Courier New"';
+  ctx.fillText('/ ' + state.path.join(' / '), offX, 32);
+}
+
+function render2DFile() {
+  const file = state.insideFile;
+  const lines = file.content;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const lineH = 18;
+  const offX = 40;
+  const offY = 60;
+  const charSize = 9;
+
+  // Player position in file coords
+  const playerLine = Math.floor(state.player.y);
+  const playerCol = Math.floor(state.player.x * 4);
+
+  lines.forEach((line, i) => {
+    if (state.removedLines.has(i)) {
+      // Demolished — draw a gap indicator
+      ctx.fillStyle = 'rgba(255,68,68,0.08)';
+      ctx.fillRect(offX, offY + i * lineH, W - offX * 2, lineH - 2);
+      ctx.fillStyle = 'rgba(255,68,68,0.25)';
+      ctx.font = '9px "Courier New"';
+      ctx.fillText('~', offX - 14, offY + i * lineH + 13);
+      return;
+    }
+
+    // Highlight current line
+    if (i === playerLine) {
+      ctx.fillStyle = 'rgba(0,255,136,0.06)';
+      ctx.fillRect(offX - 4, offY + i * lineH - 2, W - offX * 2 + 8, lineH);
+    }
+
+    // Draw line text with syntax coloring
+    const isWall = lineIsWall(line);
+
+    if (isWall) {
+      ctx.fillStyle = 'rgba(0,255,136,0.7)';
+    } else if (i === playerLine) {
+      ctx.fillStyle = '#00ff88';
+    } else {
+      ctx.fillStyle = 'rgba(0,255,136,0.4)';
+    }
+
+    ctx.font = `${charSize + 2}px "Courier New"`;
+    ctx.fillText(line, offX, offY + i * lineH + 13);
+
+    // Line number
+    ctx.fillStyle = 'rgba(0,255,136,0.15)';
+    ctx.font = '9px "Courier New"';
+    ctx.fillText(String(i + 1).padStart(3), offX - 36, offY + i * lineH + 13);
+  });
+
+  // Player cursor
+  const cx = offX + playerCol * (charSize - 0.5);
+  const cy = offY + playerLine * lineH;
+
+  // Blinking cursor (use time)
+  if (Math.floor(Date.now() / 500) % 2 === 0) {
+    ctx.fillStyle = 'rgba(0,255,136,0.85)';
+    ctx.fillRect(cx, cy, 8, lineH - 2);
+  } else {
+    ctx.strokeStyle = '#00ff88';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx + 0.5, cy + 0.5, 7, lineH - 3);
+  }
+
+  // dd pending indicator
+  if (state.vim.pending === 'd') {
+    ctx.fillStyle = 'rgba(255,68,68,0.15)';
+    ctx.fillRect(offX - 4, cy - 2, W - offX * 2 + 8, lineH);
+    ctx.fillStyle = '#ff4444';
+    ctx.font = '10px "Courier New"';
+    ctx.fillText('d_', W - 60, 32);
+  }
+
+  // File name header
+  ctx.fillStyle = 'rgba(0,255,136,0.25)';
+  ctx.font = '10px "Courier New"';
+  ctx.fillText(
+    '/ ' + state.path.join(' / ') + ' / ' + file.name,
+    40, 32
+  );
+}
+
+function lineIsWall(line) {
+  // A line is "solid" if it contains block chars or is mostly non-space
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  const blockChars = (line.match(/[█▓▒░]/g) || []).length;
+  return blockChars > line.length * 0.3;
+}
+
+// ─── FP RENDERER ─────────────────────────────────────────────────────────────
+
+function renderFP() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  if (state.insideFile) {
+    renderFPFile();
+  } else {
+    renderFPWorld();
+  }
+}
+
+function renderFPWorld() {
+  const { player, currentNode } = state;
+  const fov = Math.PI / 2.5;
+  const maxDist = 15;
+  const step = 0.05;
+
+  for (let x = 0; x < W; x++) {
+    const angle = player.angle - fov / 2 + (x / W) * fov;
+    let dist = maxDist;
+
+    let rx = player.x;
+    let ry = player.y;
+    for (let d = 0; d < maxDist; d += step) {
+      rx += Math.cos(angle) * step;
+      ry += Math.sin(angle) * step;
+      if (rx < 0 || ry < 0 || rx > 10 || ry > 10) { dist = d; break; }
+    }
+
+    dist *= Math.cos(angle - player.angle);
+    const wallH = Math.min(H, H / (dist + 0.001));
+    const shade = Math.max(0, 255 - dist * 18);
+    const g = shade;
+
+    ctx.fillStyle = `rgb(0,${g},${Math.floor(g * 0.5)})`;
+    ctx.fillRect(x, (H - wallH) / 2, 1, wallH);
+  }
+
+  // Floor/ceiling
+  ctx.fillStyle = 'rgba(0,40,20,0.3)';
+  ctx.fillRect(0, H / 2, W, H / 2);
+
+  // Crosshair
+  ctx.strokeStyle = 'rgba(0,255,136,0.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 12, H/2);
+  ctx.lineTo(W/2 + 12, H/2);
+  ctx.moveTo(W/2, H/2 - 12);
+  ctx.lineTo(W/2, H/2 + 12);
+  ctx.stroke();
+}
+
+function renderFPFile() {
+  const { player, insideFile, removedLines } = state;
+  const file = insideFile;
+  const fov = Math.PI / 3;
+  const step = 0.03;
+  const maxDist = 25;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  for (let x = 0; x < W; x++) {
+    const angle = player.angle - fov / 2 + (x / W) * fov;
+    let dist = maxDist;
+
+    let rx = player.x;
+    let ry = player.y;
+
+    for (let d = 0; d < maxDist; d += step) {
+      rx += Math.cos(angle) * step;
+      ry += Math.sin(angle) * step;
+
+      if (rx < 0 || rx > 20) { dist = d; break; }
+
+      const li = Math.floor(ry);
+      if (removedLines.has(li)) continue;
+      if (li < 0 || li >= file.content.length) { dist = d; break; }
+
+      const line = file.content[li] || '';
+      const indent = (line.match(/^\s*/) || [''])[0].length * 0.12;
+      const maxW = 3 + line.length * 0.06;
+
+      if (rx < indent || rx > maxW) { dist = d; break; }
+    }
+
+    dist *= Math.cos(angle - player.angle);
+    const wallH = Math.min(H, H / (dist + 0.001));
+
+    let shade = Math.max(0, 255 - dist * 30);
+    let r = dist > 6 ? Math.floor((dist - 6) * 25) : 0;
+    let g = shade;
+    let b = Math.floor(shade * 0.3);
+
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(x, (H - wallH) / 2, 1, wallH);
+  }
+
+  // Text overlay
+  ctx.font = '13px "Courier New"';
+  for (let i = 0; i < file.content.length; i++) {
+    if (removedLines.has(i)) continue;
+    const line = file.content[i];
+
+    const dx = 2 - player.x;
+    const dy = i - player.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 0.4 || dist > 18) continue;
+
+    const scale = 180 / dist;
+    const sx = W / 2 + (dx / dist) * scale * 2;
+    const sy = H / 2 - (dy / dist) * scale * 0.5;
+
+    const alpha = Math.max(0, 1 - dist / 18);
+    let gr = 255, gb = 120;
+
+    if (dist > 6) { gr = 180; gb = 50; }
+    if (dist > 12) { gr = 80; gb = 20; }
+
+    ctx.fillStyle = `rgba(0,${gr},${gb},${alpha})`;
+    ctx.globalAlpha = alpha;
+    ctx.fillText(line.slice(0, 100), sx, sy);
+  }
+  ctx.globalAlpha = 1;
+
+  // Crosshair
+  ctx.strokeStyle = 'rgba(0,255,136,0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 10, H/2);
+  ctx.lineTo(W/2 + 10, H/2);
+  ctx.moveTo(W/2, H/2 - 10);
+  ctx.lineTo(W/2, H/2 + 10);
+  ctx.stroke();
+}
+
+// ─── TERMINAL RENDERER ───────────────────────────────────────────────────────
+
+function renderTerminal() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const node = state.currentNode;
+  ctx.font = '13px "Courier New"';
+
+  let y = 60;
+  const x = 40;
+
+  // Path
+  ctx.fillStyle = 'rgba(0,255,136,0.5)';
+  ctx.fillText('icepick:/ ' + state.path.join('/') + ' $', x, y);
+  y += 28;
+
+  if (state.insideFile) {
+    const file = state.insideFile;
+    ctx.fillStyle = 'rgba(0,255,136,0.3)';
+    ctx.fillText(`--- ${file.name} (${file.content.length} lines) ---`, x, y);
+    y += 22;
+
+    const playerLine = Math.floor(state.player.y);
+
+    file.content.forEach((line, i) => {
+      if (y > H - 80) return;
+
+      if (state.removedLines.has(i)) {
+        ctx.fillStyle = 'rgba(255,68,68,0.3)';
+        ctx.fillText(`  ${String(i+1).padStart(3)}  ~`, x, y);
+      } else {
+        const isCurrent = i === playerLine;
+        ctx.fillStyle = isCurrent ? '#00ff88' : 'rgba(0,255,136,0.35)';
+
+        if (isCurrent) {
+          ctx.fillStyle = 'rgba(0,255,136,0.08)';
+          ctx.fillRect(x - 4, y - 13, W - x * 2 + 8, 18);
+          ctx.fillStyle = '#00ff88';
+        }
+
+        ctx.fillText(`  ${String(i+1).padStart(3)}  ${line}`, x, y);
+      }
+
+      y += 18;
+    });
+
+  } else {
+    // Directory listing
+    const dirs = Object.keys(node.children);
+    const files = node.files;
+
+    ctx.fillStyle = 'rgba(0,255,136,0.3)';
+    ctx.fillText(`total ${dirs.length + files.length}`, x, y);
+    y += 22;
+
+    dirs.forEach(d => {
+      ctx.fillStyle = '#ffaa00';
+      ctx.fillText(`  drwxr-xr-x  ${d}/`, x, y);
+      if (ROOMS[d]) {
+        ctx.fillStyle = 'rgba(255,170,0,0.35)';
+        ctx.fillText(`             ${ROOMS[d].description}`, x + 200, y);
+      }
+      y += 18;
+    });
+
+    files.forEach(f => {
+      ctx.fillStyle = '#00ff88';
+      ctx.fillText(`  -rw-r--r--  ${f.name}  (${f.content.length} lines)`, x, y);
+      y += 18;
+    });
+
+    y += 14;
+    ctx.fillStyle = 'rgba(0,255,136,0.2)';
+    ctx.fillText('Enter: open  |  h j k l: move  |  Backspace: up', x, y);
+  }
+
+  // Blinking cursor line
+  if (Math.floor(Date.now() / 600) % 2 === 0) {
+    ctx.fillStyle = 'rgba(0,255,136,0.7)';
+    ctx.fillText('█', x, y + 28);
+  }
+}
+
+// ─── MOVEMENT & NAVIGATION ───────────────────────────────────────────────────
+
+function screenToWorld2D(screenX, screenY) {
+  const offX = 40;
+  const offY = 60;
+  return {
+    x: ((screenX - offX) / (W - offX * 2)) * 10,
+    y: ((screenY - offY) / (H - offY * 2 - 60)) * 10,
+  };
+}
+
+function tryMove2D(dx, dy) {
+  const p = state.player;
+  const nx = p.x + dx;
+  const ny = p.y + dy;
+
+  if (nx < 0 || ny < 0 || nx > 10 || ny > 10) return;
+
+  p.x = nx;
+  p.y = ny;
+
+  // Face direction of movement
+  if (dx !== 0 || dy !== 0) {
+    p.angle = Math.atan2(dy, dx);
+  }
+}
+
+function tryMoveFP(amount) {
+  const p = state.player;
+  const nx = p.x + Math.cos(p.angle) * amount;
+  const ny = p.y + Math.sin(p.angle) * amount;
+
+  if (nx >= 0 && nx <= 10 && ny >= 0 && ny <= 10) {
+    p.x = nx;
+    p.y = ny;
+  }
+}
+
+function tryEnter() {
+  const node = state.currentNode;
+  const p = state.player;
+
+  // In 2D mode, find closest item on screen
+  if (state.mode === '2d' && !state.insideFile) {
+    const dirs = Object.keys(node.children);
+    const files = node.files;
+
+    // Check proximity to any item using world coords
+    const offX = 40;
+    const offY = 60;
+    const cols = Math.max(1, Math.floor((W - 40) / (TILE * 4)));
+
+    const all = [...dirs.map(d => ({ type:'dir', name:d })),
+                 ...files.map((f,i) => ({ type:'file', name:f.name, ref:f, idx:i }))];
+
+    const px = offX + (p.x / 10) * (W - offX * 2);
+    const py = offY + (p.y / 10) * (H - offY * 2 - 60);
+
+    all.forEach((item, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const tx = offX + col * (TILE * 4 + 20);
+      const ty = offY + row * (TILE * 3 + 20);
+      const tw = TILE * 4;
+      const th = TILE * 3;
+      const cx = tx + tw / 2;
+      const cy = ty + th / 2;
+
+      if (Math.hypot(px - cx, py - cy) < 70) {
+        if (item.type === 'dir') {
+          state.currentNode = node.children[item.name];
+          state.path.push(item.name);
+          state.player = { x: 5, y: 5, angle: 0 };
+          setMessage(item.name in MESSAGES ? item.name : 'movement');
+        } else {
+          enterFile(item.ref || node.files.find(f => f.name === item.name));
+        }
+      }
+    });
+    return;
+  }
+
+  // Terminal mode: enter first available
+  if (state.mode === 'terminal' && !state.insideFile) {
+    const dirs = Object.keys(node.children);
+    if (dirs.length > 0) {
+      const name = dirs[0];
+      state.currentNode = node.children[name];
+      state.path.push(name);
+      state.player = { x: 5, y: 5, angle: 0 };
+    } else if (node.files.length > 0) {
+      enterFile(node.files[0]);
+    }
+  }
+}
+
+function enterFile(file) {
+  state.insideFile = file;
+  state.removedLines.clear();
+  state.spawned = [];
+  state.player = { x: 2, y: 1, angle: 0 };
+  setMessage('insideFile');
+}
+
+function exitCurrent() {
+  if (state.insideFile) {
+    state.insideFile = null;
+    state.removedLines.clear();
+    state.player = { x: 5, y: 5, angle: 0 };
+    const nodeName = state.path[state.path.length - 1] || 'root';
+    setMessage(nodeName in MESSAGES ? nodeName : 'movement');
+    return;
+  }
+
+  if (state.path.length === 0) return;
+
+  state.path.pop();
+  let node = world;
+  for (const p of state.path) {
+    node = node.children?.[p] || node;
+  }
+  state.currentNode = node;
+  state.player = { x: 5, y: 5, angle: 0 };
+
+  const nodeName = state.path[state.path.length - 1] || 'root';
+  setMessage('root');
+}
+
+// ─── VIM COMMANDS ────────────────────────────────────────────────────────────
+
+function handleVim(key) {
+  const vim = state.vim;
+
+  if (key === 'u') { undo(); return; }
+  if (key === '.') { if (state.lastCommand) state.lastCommand(); return; }
+
+  if (key === 'd') {
+    if (vim.pending === 'd') {
+      vim.pending = null;
+      demolishLine();
+    } else {
+      vim.pending = 'd';
+    }
+    return;
+  }
+
+  // Any other key clears pending
+  if (vim.pending) { vim.pending = null; }
+
+  updateHUD();
+}
+
+function demolishLine() {
+  if (!state.insideFile) return;
+  const line = Math.floor(state.player.y);
+
+  const change = {
+    apply() { state.removedLines.add(line); state.linesRemoved++; },
+    revert() { state.removedLines.delete(line); state.linesRemoved--; }
+  };
+
+  change.apply();
+  state.history.push(change);
+  state.lastCommand = demolishLine;
+  updateHUD();
+}
+
+function undo() {
+  const change = state.history.pop();
+  if (change) change.revert();
+  updateHUD();
+}
+
+// ─── HUD UPDATE ──────────────────────────────────────────────────────────────
+
+function updateHUD() {
+  document.getElementById('mode-label').textContent =
+    'MODE: ' + state.mode.toUpperCase() +
+    (state.vim.pending ? ' [' + state.vim.pending + '_]' : '');
+
+  document.getElementById('score-label').textContent =
+    'lines removed: ' + state.linesRemoved;
+}
+
+// ─── MODE FLASH ──────────────────────────────────────────────────────────────
+
+function flashMode(label) {
+  const el = document.getElementById('mode-flash');
+  el.textContent = label;
+  el.style.opacity = '1';
+  setTimeout(() => { el.style.opacity = '0'; }, 600);
+}
+
+// ─── INPUT ───────────────────────────────────────────────────────────────────
+
+window.addEventListener('keydown', e => {
+  const key = e.key;
+
+  // Mode switching
+  if (key === 'Tab') {
+    e.preventDefault();
+    state.mode = state.mode === 'fp' ? '2d'
+               : state.mode === '2d' ? 'terminal'
+               : 'fp';
+    flashMode(state.mode.toUpperCase());
+    updateHUD();
+    return;
+  }
+
+  if (key === '1') { state.mode = 'fp'; flashMode('FP'); updateHUD(); return; }
+  if (key === '2') { state.mode = '2d'; flashMode('2D'); updateHUD(); return; }
+  if (key === '3') { state.mode = 'terminal'; flashMode('TERM'); updateHUD(); return; }
+
+  // Navigation
+  if (key === 'Backspace') { e.preventDefault(); exitCurrent(); return; }
+  if (key === 'Enter') { tryEnter(); return; }
+
+  // Movement
+  const STEP = 0.4;
+  const FP_STEP = 0.25;
+  const TURN = 0.1;
+
+  if (state.mode === 'fp') {
+    if (key === 'w') tryMoveFP(FP_STEP);
+    if (key === 's') tryMoveFP(-FP_STEP);
+    if (key === 'a') state.player.angle -= TURN;
+    if (key === 'd') state.player.angle += TURN;
+
+    if (key === 'h') tryMoveFP(-FP_STEP);
+    if (key === 'l') tryMoveFP(FP_STEP);
+    if (key === 'k') {
+      state.player.y = Math.max(0, state.player.y - FP_STEP);
+    }
+    if (key === 'j') {
+      state.player.y = Math.min(10, state.player.y + FP_STEP);
+    }
+  } else {
+    // 2D and terminal share hjkl movement
+    if (key === 'h') tryMove2D(-STEP, 0);
+    if (key === 'l') tryMove2D(STEP, 0);
+    if (key === 'k') tryMove2D(0, -STEP);
+    if (key === 'j') tryMove2D(0, STEP);
+  }
+
+  // Vim commands (inside file only for destructive ops)
+  if (state.insideFile) {
+    handleVim(key);
+
+    // In-file hjkl movement (fine-grained)
+    if (key === 'h') state.player.x = Math.max(0, state.player.x - 0.5);
+    if (key === 'l') state.player.x = Math.min(20, state.player.x + 0.5);
+    if (key === 'k') state.player.y = Math.max(0, state.player.y - 1);
+    if (key === 'j') state.player.y = Math.min(
+      (state.insideFile?.content.length ?? 10) - 1,
+      state.player.y + 1
+    );
+  } else {
+    // Still allow vim key tracking outside file
+    handleVim(key);
+  }
+
+  updateHUD();
+});
+
+// ─── MAIN LOOP ────────────────────────────────────────────────────────────────
+
+function loop() {
+  if (state.mode === '2d') render2D();
+  else if (state.mode === 'fp') renderFP();
+  else renderTerminal();
+
+  requestAnimationFrame(loop);
+}
+
+setMessage('root');
+updateHUD();
+loop();
+
+})();
+</script>
+</body>
+</html>

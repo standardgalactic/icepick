@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ICEPICK — 2D</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #000;
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #top-bar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 16px;
+    border-bottom: 1px solid rgba(0,255,136,0.15);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    background: #000;
+  }
+  #top-left  { color: rgba(0,255,136,0.9); text-shadow: 0 0 8px #00ff88; }
+  #top-right { color: #ffaa00; }
+  #canvas-wrap {
+    flex: 1 1 auto;
+    position: relative;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+  }
+  #bottom-bar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 7px 16px;
+    border-top: 1px solid rgba(0,255,136,0.15);
+    background: #000;
+    font-size: 11px;
+    min-height: 44px;
+  }
+  #msg { color: #00ff88; flex: 1; line-height: 1.5; }
+  #inventory {
+    display: flex;
+    gap: 8px;
+    margin-left: 24px;
+  }
+  .cmd-chip {
+    border: 1px solid rgba(0,255,136,0.4);
+    padding: 2px 7px;
+    border-radius: 2px;
+    font-size: 11px;
+    color: #00ff88;
+    text-shadow: 0 0 6px #00ff88;
+    background: rgba(0,255,136,0.06);
+  }
+  /* CRT overlay */
+  #canvas-wrap::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0,255,100,0.025) 0px,
+      rgba(0,255,100,0.025) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+  }
+  #canvas-wrap::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center,
+      transparent 55%, rgba(0,0,0,0.65) 100%);
+    pointer-events: none;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <div id="top-left">ICEPICK &nbsp;·&nbsp; <span id="level-name">Level 1 — hjkl</span></div>
+  <div id="top-right"><span id="inv-label">commands: </span><span id="inv-list">h j k l</span></div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="screen"></canvas>
+</div>
+
+<div id="bottom-bar">
+  <div id="msg">Walk with <b>h j k l</b>. Find the glowing letters to collect new commands.</div>
+  <div id="inventory"></div>
+</div>
+
+<script>
+(function() {
+"use strict";
+
+// ── canvas ────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+
+let W, H;
+function resize() {
+  const r = wrap.getBoundingClientRect();
+  W = canvas.width  = Math.floor(r.width);
+  H = canvas.height = Math.floor(r.height);
+}
+window.addEventListener('resize', () => { resize(); });
+resize();
+
+// ── constants ─────────────────────────────────────────────────────────────────
+const CW = 12;   // cell width  (px)
+const CH = 20;   // cell height (px)
+const FONT = `${CH - 4}px "Courier New"`;
+
+// ── level definitions ─────────────────────────────────────────────────────────
+// Legend:
+//   space = floor   # = wall   @ = player start   o = boulder
+//   w e b f = command pickup   > = exit
+
+const LEVELS = [
+  {
+    name: "Level 1 — hjkl",
+    intro: 'Walk with <b>h j k l</b>. Navigate the corridors to find the exit.',
+    startCommands: ['h','j','k','l'],
+    map: [
+      "##########################################",
+      "#                                        #",
+      "#  @   use h j k l to move               #",
+      "#                                        #",
+      "###################  ####################",
+      "#                                        #",
+      "#  h = left    l = right                 #",
+      "#  k = up      j = down                  #",
+      "#                                        #",
+      "###########################  ############",
+      "#                                        #",
+      "#  navigate every corridor               #",
+      "#                                        #",
+      "###########  ############################",
+      "#                                        #",
+      "#  you are getting it                    #",
+      "#                                        #",
+      "#############################  ##########",
+      "#                                        #",
+      "#  one more turn...                      #",
+      "#                                        #",
+      "####################  ###################",
+      "#                                        #",
+      "#  reach the exit  >                     #",
+      "#                                        #",
+      "##########################################",
+    ],
+  },
+  {
+    name: "Level 2 — w and e",
+    intro: 'Boulders block the path. Pick up <b>w</b> to jump over them.',
+    startCommands: ['h','j','k','l'],
+    map: [
+      "##########################################",
+      "#                                        #",
+      "#  @   boulders block your path          #",
+      "#                                        #",
+      "####################  ###################",
+      "#                                        #",
+      "#  find w to jump to next word           #",
+      "#                                        #",
+      "#       w                                #",
+      "#                                        #",
+      "##########################################",
+      "#                                        #",
+      "#  o o o   jump!                         #",
+      "#                                        #",
+      "#  o o o o o   harder                    #",
+      "#                                        #",
+      "####################  ###################",
+      "#                                        #",
+      "#  find e to jump to end of word         #",
+      "#                                        #",
+      "#       e                                #",
+      "#                                        #",
+      "##########################################",
+      "#                                        #",
+      "#  o o o o o o o o   use e               #",
+      "#                                        #",
+      "#                                  >     #",
+      "#                                        #",
+      "##########################################",
+    ],
+  },
+  {
+    name: "Level 3 — b and f",
+    intro: 'Pick up <b>b</b> to jump back a word. Then find <b>f</b> to leap to a character.',
+    startCommands: ['h','j','k','l','w','e'],
+    map: [
+      "##########################################",
+      "#                                        #",
+      "#  @   you have w and e                  #",
+      "#                                        #",
+      "#  o o o o   jump right with w           #",
+      "#                                        #",
+      "###########################  ############",
+      "#                                        #",
+      "#  dead end ahead. pick up b to go back  #",
+      "#                                        #",
+      "#       b                                #",
+      "#                                        #",
+      "#  o o o o   now jump back with b        #",
+      "#                                        #",
+      "##############  #########################",
+      "#                                        #",
+      "#  now find f to leap to a character     #",
+      "#                                        #",
+      "#       f                                #",
+      "#                                        #",
+      "##########################################",
+      "#                                        #",
+      "#  fo   fo   fo   use f then a char      #",
+      "#                                        #",
+      "#  the exit is past the boulders         #",
+      "#                                        #",
+      "#  o o o fo o o o                  >     #",
+      "#                                        #",
+      "##########################################",
+    ],
+  },
+  {
+    name: "Level 4 — 0 and $",
+    intro: 'Pick up <b>0</b> to jump to line start. Pick up <b>$</b> to jump to line end.',
+    startCommands: ['h','j','k','l','w','e','b','f'],
+    map: [
+      "##########################################",
+      "#                                        #",
+      "#  @   you have all word motions         #",
+      "#                                        #",
+      "#  o o o o o o   need to cross fast      #",
+      "#                                        #",
+      "####  ###################################",
+      "#                                        #",
+      "#  find 0 to jump to start of line       #",
+      "#                                        #",
+      "#  Z                                     #",
+      "#                                        #",
+      "#  o o o o o o   use 0 to reset          #",
+      "#                                        #",
+      "###################################  ####",
+      "#                                        #",
+      "#  find $ to jump to end of line         #",
+      "#                                        #",
+      "#                                     D  #",
+      "#                                        #",
+      "#  o o o o o o o o o   cross with $      #",
+      "#                                        #",
+      "####  ###################################",
+      "#                                        #",
+      "#  combine everything to reach the exit  #",
+      "#                                        #",
+      "#  o o 0 o o $ o o o o o o o o    >     #",
+      "#                                        #",
+      "##########################################",
+    ],
+  },
+];
+
+// Parse map into a 2D array of cell objects
+// Pickup chars: w e b f Z D (Z=0 key, D=$ key)
+const PICKUP_CHARS = new Set(['w','e','b','f','Z','D']);
+const PICKUP_CMD   = { w:'w', e:'e', b:'b', f:'f', Z:'0', D:'$' };
+
+function parseMap(src) {
+  const rows = [];
+  let playerStart = { x: 1, y: 1 };
+  const pickups = [];
+  const boulders = [];
+  let exit = null;
+
+  src.forEach((line, row) => {
+    const cells = [];
+    for (let col = 0; col < line.length; col++) {
+      const ch = line[col];
+      let type = 'floor';
+      if (ch === '#') {
+        type = 'wall';
+      } else if (ch === '@') {
+        type = 'floor'; playerStart = { x: col, y: row };
+      } else if (ch === 'o') {
+        type = 'boulder'; boulders.push({ x: col, y: row });
+      } else if (ch === '>') {
+        type = 'exit'; exit = { x: col, y: row };
+      } else if (PICKUP_CHARS.has(ch)) {
+        type = 'pickup';
+        pickups.push({ x: col, y: row, ch, cmd: PICKUP_CMD[ch], collected: false });
+      }
+      cells.push({ type, ch: (ch === '@' || PICKUP_CHARS.has(ch)) ? ' ' : ch });
+    }
+    rows.push(cells);
+  });
+
+  return { rows, playerStart, pickups, boulders, exit };
+}
+
+// ── state ─────────────────────────────────────────────────────────────────────
+let currentLevelIdx = 0;
+let level = parseMap(LEVELS[0].map);
+
+const state = {
+  player: { ...level.playerStart },
+  commands: new Set(LEVELS[0].startCommands),
+  pickups: level.pickups.map(p => ({ ...p })),
+  boulders: level.boulders.map(b => ({ ...b })),
+  exit: level.exit,
+  won: false,
+  gameOver: false,
+  fPending: null,   // for 'f' motion: next key pressed is the target char
+  tick: 0,
+};
+
+function loadLevel(idx) {
+  const def = LEVELS[idx];
+  level = parseMap(def.map);
+  state.player = { ...level.playerStart };
+  // carry commands forward but merge with level's start set
+  def.startCommands.forEach(c => state.commands.add(c));
+  state.pickups  = level.pickups.map(p => ({ ...p }));
+  state.boulders = level.boulders.map(b => ({ ...b }));
+  state.exit     = level.exit;
+  state.won      = false;
+  state.fPending = null;
+  document.getElementById('level-name').textContent = def.name;
+  setMsg(def.intro);
+  updateInventory();
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function cellAt(x, y) {
+  const row = level.rows[y];
+  if (!row) return { type: 'wall', ch: '#' };
+  return row[x] || { type: 'wall', ch: '#' };
+}
+
+function isBoulder(x, y) {
+  return state.boulders.some(b => b.x === x && b.y === y);
+}
+
+function isPickup(x, y) {
+  return state.pickups.find(p => p.x === x && p.y === y && !p.collected);
+}
+
+function rowLen(y) {
+  return level.rows[y] ? level.rows[y].length - 1 : 0;
+}
+
+// word right: skip to next word start (boulders = boundaries)
+function wordRight(x, y) {
+  let nx = x + 1;
+  const maxX = rowLen(y);
+  while (nx <= maxX && cellAt(nx,y).ch === ' ' && !isBoulder(nx,y)) nx++;
+  while (nx <= maxX && cellAt(nx,y).ch !== ' ' && cellAt(nx,y).type !== 'wall' && !isBoulder(nx,y)) nx++;
+  while (nx <= maxX && cellAt(nx,y).ch === ' ' && !isBoulder(nx,y)) nx++;
+  return Math.min(nx, maxX);
+}
+
+// word end: jump to end of next word
+function wordEnd(x, y) {
+  let nx = x + 1;
+  const maxX = rowLen(y);
+  while (nx <= maxX && cellAt(nx,y).ch === ' ' && !isBoulder(nx,y)) nx++;
+  while (nx+1 <= maxX && cellAt(nx+1,y).ch !== ' ' && cellAt(nx+1,y).type !== 'wall' && !isBoulder(nx+1,y)) nx++;
+  return Math.min(nx, maxX);
+}
+
+// word back: jump to previous word start
+function wordBack(x, y) {
+  let nx = x - 1;
+  if (nx < 0) return 0;
+  while (nx > 0 && cellAt(nx,y).ch === ' ' && !isBoulder(nx,y)) nx--;
+  while (nx-1 >= 0 && cellAt(nx-1,y).ch !== ' ' && cellAt(nx-1,y).type !== 'wall' && !isBoulder(nx-1,y)) nx--;
+  return Math.max(0, nx);
+}
+
+// find char: jump to next occurrence of ch on same row
+function findChar(x, y, ch) {
+  const maxX = rowLen(y);
+  for (let nx = x + 1; nx <= maxX; nx++) {
+    if (cellAt(nx, y).ch === ch) return nx;
+    // boulders also match 'o'
+    if (ch === 'o' && isBoulder(nx, y)) return nx;
+  }
+  return x; // not found, stay
+}
+
+// line start / end
+function lineStart(y) {
+  const maxX = rowLen(y);
+  for (let nx = 0; nx <= maxX; nx++) {
+    if (cellAt(nx,y).type !== 'wall') return nx;
+  }
+  return 0;
+}
+function lineEnd(y) {
+  const maxX = rowLen(y);
+  for (let nx = maxX; nx >= 0; nx--) {
+    if (cellAt(nx,y).type !== 'wall') return nx;
+  }
+  return maxX;
+}
+
+// ── movement ──────────────────────────────────────────────────────────────────
+function tryMove(nx, ny) {
+  if (nx < 0 || ny < 0) return;
+  const cell = cellAt(nx, ny);
+  if (cell.type === 'wall') return;
+  if (isBoulder(nx, ny)) {
+    if (state.commands.has('w') || state.commands.has('e')) {
+      setMsg('A boulder blocks you. Use <b>w</b> or <b>e</b> to jump over it.');
+    } else {
+      setMsg('A boulder blocks your path. Find <b>w</b> to jump over boulders.');
+    }
+    return;
+  }
+  state.player.x = nx;
+  state.player.y = ny;
+  checkPickup();
+  checkExit();
+}
+
+function jumpTo(nx, y) {
+  if (cellAt(nx, y).type === 'wall') return;
+  if (isBoulder(nx, y)) return;
+  state.player.x = nx;
+  state.player.y = y;
+  checkPickup();
+  checkExit();
+}
+
+function checkPickup() {
+  const { x, y } = state.player;
+  const p = isPickup(x, y);
+  if (!p) return;
+  p.collected = true;
+  state.commands.add(p.cmd);
+  updateInventory();
+  const msgs = {
+    w: '✓ Got <b>w</b> — jumps to next word start. Boulders are word boundaries!',
+    e: '✓ Got <b>e</b> — jumps to word end. Good for longer boulder runs.',
+    b: '✓ Got <b>b</b> — jumps back a word. Use it to backtrack over boulders.',
+    f: '✓ Got <b>f</b> — then type a character to leap to it on the same line.',
+    '0': '✓ Got <b>0</b> — jumps to the very start of the line instantly.',
+    '$': '✓ Got <b>$</b> — jumps to the very end of the line instantly.',
+  };
+  setMsg(msgs[p.cmd] || `✓ Got <b>${p.cmd}</b>`);
+}
+
+function checkExit() {
+  const { x, y } = state.player;
+  if (!state.exit) return;
+  if (x !== state.exit.x || y !== state.exit.y) return;
+
+  state.won = true;
+  const next = currentLevelIdx + 1;
+  if (next < LEVELS.length) {
+    setMsg(`✓ <b>Level ${currentLevelIdx + 1} complete!</b> Press <b>Enter</b> to continue.`);
+  } else {
+    setMsg('🎉 <b>You finished all levels!</b> Commands mastered: ' + [...state.commands].join(' '));
+  }
+}
+
+function setMsg(html) {
+  document.getElementById('msg').innerHTML = html;
+}
+
+function updateInventory() {
+  document.getElementById('inv-list').textContent = [...state.commands].join('  ');
+}
+
+// ── input ─────────────────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  const key = e.key;
+
+  // Advance level on Enter when won
+  if (state.won && key === 'Enter') {
+    e.preventDefault();
+    const next = currentLevelIdx + 1;
+    if (next < LEVELS.length) {
+      currentLevelIdx = next;
+      loadLevel(currentLevelIdx);
+    }
+    return;
+  }
+
+  if (state.won) return;
+
+  // f-motion: waiting for target character
+  if (state.fPending) {
+    e.preventDefault();
+    const target = key.length === 1 ? key : null;
+    if (target) {
+      const nx = findChar(state.player.x, state.player.y, target);
+      jumpTo(nx, state.player.y);
+    }
+    state.fPending = false;
+    return;
+  }
+
+  const { x, y } = state.player;
+
+  if (key === 'h' && state.commands.has('h')) { e.preventDefault(); tryMove(x-1, y); return; }
+  if (key === 'l' && state.commands.has('l')) { e.preventDefault(); tryMove(x+1, y); return; }
+  if (key === 'k' && state.commands.has('k')) { e.preventDefault(); tryMove(x, y-1); return; }
+  if (key === 'j' && state.commands.has('j')) { e.preventDefault(); tryMove(x, y+1); return; }
+
+  if (key === 'w' && state.commands.has('w')) {
+    e.preventDefault();
+    jumpTo(wordRight(x, y), y); return;
+  }
+  if (key === 'e' && state.commands.has('e')) {
+    e.preventDefault();
+    jumpTo(wordEnd(x, y), y); return;
+  }
+  if (key === 'b' && state.commands.has('b')) {
+    e.preventDefault();
+    jumpTo(wordBack(x, y), y); return;
+  }
+  if (key === 'f' && state.commands.has('f')) {
+    e.preventDefault();
+    state.fPending = true;
+    setMsg('<b>f</b> — type a character to leap to it on this line.');
+    return;
+  }
+  if (key === '0' && state.commands.has('0')) {
+    e.preventDefault();
+    jumpTo(lineStart(y), y); return;
+  }
+  if (key === '$' && state.commands.has('$')) {
+    e.preventDefault();
+    jumpTo(lineEnd(y), y); return;
+  }
+
+  // Hint for unlearned commands
+  const knownKeys = new Set(['h','j','k','l','w','e','b','f','0','$']);
+  if (knownKeys.has(key) && !state.commands.has(key)) {
+    setMsg(`You haven't found <b>${key}</b> yet. Look for the glowing letter on the map.`);
+  }
+});
+
+// ── renderer ──────────────────────────────────────────────────────────────────
+
+// Camera: center on player
+function worldToScreen(wx, wy) {
+  const cx = Math.floor(W / 2) - state.player.x * CW;
+  const cy = Math.floor(H / 2) - state.player.y * CH;
+  return { sx: wx * CW + cx, sy: wy * CH + cy };
+}
+
+function draw() {
+  state.tick++;
+  const blink = Math.floor(state.tick / 20) % 2 === 0;
+  const t = state.tick * 0.04;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const rows = level.rows;
+  const totalRows = rows.length;
+
+  for (let row = 0; row < totalRows; row++) {
+    const cols = rows[row];
+    for (let col = 0; col < cols.length; col++) {
+      const cell = cols[col];
+      const { sx, sy } = worldToScreen(col, row);
+
+      // Cull off-screen
+      if (sx < -CW * 2 || sx > W + CW || sy < -CH * 2 || sy > H + CH) continue;
+
+      ctx.font = FONT;
+
+      if (cell.type === 'wall') {
+        // Wall glow
+        ctx.fillStyle = 'rgba(0,255,136,0.55)';
+        ctx.fillText('#', sx, sy + CH - 4);
+      } else if (cell.type === 'exit') {
+        // Pulsing exit
+        const pulse = 0.5 + 0.5 * Math.sin(t * 2);
+        ctx.fillStyle = `rgba(255,170,0,${0.6 + pulse * 0.4})`;
+        ctx.font = `bold ${CH - 2}px "Courier New"`;
+        ctx.fillText('>', sx, sy + CH - 4);
+        // Glow ring
+        ctx.shadowColor = '#ffaa00';
+        ctx.shadowBlur = 12 * pulse;
+        ctx.fillText('>', sx, sy + CH - 4);
+        ctx.shadowBlur = 0;
+      } else {
+        // Floor — subtle dot grid
+        if ((col + row) % 6 === 0) {
+          ctx.fillStyle = 'rgba(0,255,136,0.07)';
+          ctx.fillRect(sx + CW/2 - 1, sy + CH/2 - 1, 2, 2);
+        }
+        // Floor text decorations from map
+        if (cell.ch && cell.ch.trim() && cell.ch !== ' ') {
+          ctx.fillStyle = 'rgba(0,255,136,0.18)';
+          ctx.font = FONT;
+          ctx.fillText(cell.ch, sx, sy + CH - 4);
+        }
+      }
+    }
+  }
+
+  // Boulders
+  state.boulders.forEach(b => {
+    const { sx, sy } = worldToScreen(b.x, b.y);
+    if (sx < -CW * 2 || sx > W + CW || sy < -CH * 2 || sy > H + CH) return;
+
+    const cx2 = sx + CW / 2;
+    const cy2 = sy + CH / 2;
+    const r = Math.min(CW, CH) * 0.38;
+
+    // Glow
+    const grd = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, r * 2.2);
+    grd.addColorStop(0, 'rgba(255,80,80,0.25)');
+    grd.addColorStop(1, 'rgba(255,80,80,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Boulder circle
+    ctx.strokeStyle = '#ff4444';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner fill
+    ctx.fillStyle = 'rgba(255,60,60,0.15)';
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Pickups (glowing letters)
+  state.pickups.forEach(p => {
+    if (p.collected) return;
+    const { sx, sy } = worldToScreen(p.x, p.y);
+    if (sx < -CW * 2 || sx > W + CW || sy < -CH * 2 || sy > H + CH) return;
+
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + p.x);
+
+    // Glow pool
+    const grd = ctx.createRadialGradient(
+      sx + CW/2, sy + CH/2, 0,
+      sx + CW/2, sy + CH/2, CW * 1.8
+    );
+    grd.addColorStop(0, `rgba(0,255,136,${0.3 * pulse})`);
+    grd.addColorStop(1, 'rgba(0,255,136,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(sx + CW/2, sy + CH/2, CW * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Letter (show the command key, not the map char)
+    ctx.shadowColor = '#00ff88';
+    ctx.shadowBlur = 10 + 8 * pulse;
+    ctx.fillStyle = `rgba(0,255,136,${0.7 + 0.3 * pulse})`;
+    ctx.font = `bold ${CH - 2}px "Courier New"`;
+    ctx.fillText(p.cmd, sx, sy + CH - 4);
+    ctx.shadowBlur = 0;
+  });
+
+  // Player
+  {
+    const { sx, sy } = worldToScreen(state.player.x, state.player.y);
+    const cx2 = sx + CW / 2;
+    const cy2 = sy + CH / 2;
+
+    // Player glow
+    const pulse = 0.5 + 0.5 * Math.sin(t * 1.5);
+    const grd = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, CW * 2);
+    grd.addColorStop(0, `rgba(0,255,136,${0.4 + 0.2 * pulse})`);
+    grd.addColorStop(1, 'rgba(0,255,136,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, CW * 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cursor block (vim style — blinks)
+    if (blink) {
+      ctx.fillStyle = 'rgba(0,255,136,0.85)';
+      ctx.fillRect(sx + 1, sy + 2, CW - 2, CH - 4);
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${CH - 4}px "Courier New"`;
+      ctx.fillText('@', sx + 1, sy + CH - 5);
+    } else {
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx + 1.5, sy + 2.5, CW - 3, CH - 5);
+      ctx.fillStyle = '#00ff88';
+      ctx.font = `bold ${CH - 4}px "Courier New"`;
+      ctx.fillText('@', sx + 1, sy + CH - 5);
+    }
+  }
+
+  // Win overlay
+  if (state.won) {
+    ctx.fillStyle = 'rgba(0,0,0,0.78)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#00ff88';
+    ctx.shadowColor = '#00ff88';
+    ctx.shadowBlur = 30;
+    ctx.font = `bold 32px "Courier New"`;
+    const isLast = currentLevelIdx >= LEVELS.length - 1;
+    ctx.fillText(isLast ? 'ALL LEVELS COMPLETE' : `LEVEL ${currentLevelIdx + 1} COMPLETE`, W/2, H/2 - 28);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = 'rgba(0,255,136,0.5)';
+    ctx.font = `13px "Courier New"`;
+    ctx.fillText('commands: ' + [...state.commands].join('  '), W/2, H/2 + 10);
+
+    if (!isLast) {
+      const np = 0.5 + 0.5 * Math.sin(t * 2);
+      ctx.fillStyle = `rgba(255,170,0,${0.6 + np * 0.4})`;
+      ctx.font = `14px "Courier New"`;
+      ctx.fillText('press Enter to continue', W/2, H/2 + 38);
+    }
+    ctx.textAlign = 'left';
+  }
+
+  // f-pending indicator
+  if (state.fPending) {
+    ctx.fillStyle = 'rgba(255,170,0,0.9)';
+    ctx.font = `bold 13px "Courier New"`;
+    ctx.textAlign = 'right';
+    ctx.fillText('f → ?', W - 16, 36);
+    ctx.textAlign = 'left';
+  }
+
+  requestAnimationFrame(draw);
+}
+
+loadLevel(0);
+draw();
+
+})();
+</script>
+</body>
+</html>

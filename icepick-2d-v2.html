@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ICEPICK — 2D</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #000;
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #top-bar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 16px;
+    border-bottom: 1px solid rgba(0,255,136,0.15);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    background: #000;
+  }
+  #top-left  { color: rgba(0,255,136,0.9); text-shadow: 0 0 8px #00ff88; }
+  #top-right { color: #ffaa00; }
+  #canvas-wrap {
+    flex: 1 1 auto;
+    position: relative;
+    overflow: hidden;
+  }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+  #bottom-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    padding: 7px 16px;
+    border-top: 1px solid rgba(0,255,136,0.15);
+    background: #000;
+    font-size: 11px;
+    min-height: 44px;
+  }
+  #msg { color: #00ff88; flex: 1; line-height: 1.5; }
+  #canvas-wrap::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: repeating-linear-gradient(
+      to bottom, rgba(0,255,100,0.025) 0px, rgba(0,255,100,0.025) 1px,
+      transparent 1px, transparent 3px);
+    pointer-events: none;
+  }
+  #canvas-wrap::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.65) 100%);
+    pointer-events: none; z-index: 1;
+  }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <div id="top-left">ICEPICK &nbsp;·&nbsp; <span id="level-name">Level 1</span></div>
+  <div id="top-right">commands: <span id="inv-list">h j k l</span></div>
+</div>
+<div id="canvas-wrap"><canvas id="screen"></canvas></div>
+<div id="bottom-bar">
+  <div id="msg">Walk with <b>h j k l</b>. Find glowing letters to collect new commands.</div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const canvas = document.getElementById('screen');
+const ctx    = canvas.getContext('2d');
+const wrap   = document.getElementById('canvas-wrap');
+
+let W, H;
+function resize(){ const r=wrap.getBoundingClientRect(); W=canvas.width=Math.floor(r.width); H=canvas.height=Math.floor(r.height); }
+window.addEventListener('resize', resize);
+resize();
+
+const CW=12, CH=20, LERP_K=0.18;
+const FONT=`${CH-4}px "Courier New"`, FONTB=`bold ${CH-2}px "Courier New"`;
+
+// ── pickup symbol → command key ───────────────────────────────────────────────
+const PICKUP_MAP = {w:'w',e:'e',b:'b',f:'f',t:'t',S:';',W:'W',E:'E',B:'B',Z:'0',D:'$'};
+
+// ── levels ────────────────────────────────────────────────────────────────────
+const LEVELS = [
+{
+  name:"Level 1 — hjkl",
+  intro:'Walk with <b>h j k l</b>. Navigate every corridor to reach the exit.',
+  start:['h','j','k','l'],
+  map:[
+    "##########################################",
+    "#                                        #",
+    "#  @   h=left  l=right  k=up  j=down     #",
+    "#                                        #",
+    "###################  ####################",
+    "#                                        #",
+    "#  navigate the corridors                #",
+    "#                                        #",
+    "###########################  ############",
+    "#                                        #",
+    "#  keep going...                         #",
+    "#                                        #",
+    "###########  ############################",
+    "#                                        #",
+    "#  almost there                          #",
+    "#                                        #",
+    "#############################  ##########",
+    "#                                        #",
+    "#  one more turn                         #",
+    "#                                        #",
+    "####################  ###################",
+    "#                                        #",
+    "#  reach the exit  >                     #",
+    "#                                        #",
+    "##########################################",
+  ]
+},
+{
+  name:"Level 2 — w and e",
+  intro:'Boulders block walking. Pick up <b>w</b> to jump to the next word.',
+  start:['h','j','k','l'],
+  map:[
+    "##########################################",
+    "#                                        #",
+    "#  @   boulders block your path          #",
+    "#                                        #",
+    "####################  ###################",
+    "#                                        #",
+    "#  find w — jumps to next word start     #",
+    "#                                        #",
+    "#       w                                #",
+    "#                                        #",
+    "##########################################",
+    "#                                        #",
+    "#  o o o   jump!                         #",
+    "#                                        #",
+    "#  o o o o o   harder now                #",
+    "#                                        #",
+    "####################  ###################",
+    "#                                        #",
+    "#  find e — jumps to end of word         #",
+    "#                                        #",
+    "#       e                                #",
+    "#                                        #",
+    "##########################################",
+    "#                                        #",
+    "#  o o o o o o o o   use e               #",
+    "#                                        #",
+    "#                                  >     #",
+    "#                                        #",
+    "##########################################",
+  ]
+},
+{
+  name:"Level 3 — b and f",
+  intro:'Pick up <b>b</b> to jump back. Then find <b>f</b> to leap to a character.',
+  start:['h','j','k','l','w','e'],
+  map:[
+    "##########################################",
+    "#                                        #",
+    "#  @   you have w and e                  #",
+    "#                                        #",
+    "#  o o o o   jump right                  #",
+    "#                                        #",
+    "###########################  ############",
+    "#                                        #",
+    "#  pick up b to jump back                #",
+    "#                                        #",
+    "#       b                                #",
+    "#                                        #",
+    "#  o o o o   jump back with b            #",
+    "#                                        #",
+    "##############  #########################",
+    "#                                        #",
+    "#  pick up f — leap to a character       #",
+    "#                                        #",
+    "#       f                                #",
+    "#                                        #",
+    "##########################################",
+    "#                                        #",
+    "#  use f then type the target char       #",
+    "#                                        #",
+    "#  o o o fo o o o                  >     #",
+    "#                                        #",
+    "##########################################",
+  ]
+},
+{
+  name:"Level 4 — 0 and $",
+  intro:'Pick up <b>0</b> (line start) and <b>$</b> (line end) to cross long gauntlets.',
+  start:['h','j','k','l','w','e','b','f'],
+  map:[
+    "##########################################",
+    "#                                        #",
+    "#  @   you have all word motions         #",
+    "#                                        #",
+    "#  o o o o o o   find 0 to reset fast    #",
+    "#                                        #",
+    "####  ###################################",
+    "#                                        #",
+    "#  Z jumps to start of line              #",
+    "#                                        #",
+    "#  Z                                     #",
+    "#                                        #",
+    "#  o o o o o o   use 0 to reset          #",
+    "#                                        #",
+    "###################################  ####",
+    "#                                        #",
+    "#  D jumps to end of line                #",
+    "#                                        #",
+    "#                                     D  #",
+    "#                                        #",
+    "#  o o o o o o o o   cross with $        #",
+    "#                                        #",
+    "####  ###################################",
+    "#                                        #",
+    "#  o o o o o o o o o o o o o      >     #",
+    "#                                        #",
+    "##########################################",
+  ]
+},
+{
+  name:"Level 5 — W E B",
+  intro:'Pick up <b>W</b> to jump down a column-word. <b>E</b> to column-end. <b>B</b> back up.',
+  start:['h','j','k','l','w','e','b','f','0','$'],
+  map:[
+    "##########################################",
+    "#                                        #",
+    "#  @   vertical word motions ahead       #",
+    "#                                        #",
+    "#  W                                     #",
+    "#                                        #",
+    "#  W jumps down a column word            #",
+    "#                                        #",
+    "#  find W to cross the column boulders   #",
+    "#                                        #",
+    "########  ######  #######################",
+    "         #      #                        ",
+    "   o      #      #   o                   ",
+    "         #      #                        ",
+    "   o      #  E   #   o                   ",
+    "         #      #                        ",
+    "   o      #  B   #   o                   ",
+    "         #      #                        ",
+    "########  ######  #######################",
+    "#                                        #",
+    "#  combine W E B to navigate columns     #",
+    "#                                        #",
+    "#  o                                     #",
+    "#                                        #",
+    "#  o                          >          #",
+    "#                                        #",
+    "##########################################",
+  ]
+},
+{
+  name:"Level 6 — t and ;",
+  intro:'<b>t</b> lands just before a char. <b>;</b> repeats the last f or t.',
+  start:['h','j','k','l','w','e','b','f','0','$','W','E','B'],
+  map:[
+    "##########################################",
+    "#                                        #",
+    "#  @   t moves just BEFORE a target      #",
+    "#                                        #",
+    "#  find t                                #",
+    "#                                        #",
+    "#  t                                     #",
+    "#                                        #",
+    "################  #######################",
+    "#                                        #",
+    "#  land before the x — use tx           #",
+    "#                                        #",
+    "#  o o o x o o o o o                     #",
+    "#                                        #",
+    "##############################  #########",
+    "#                                        #",
+    "#  find ; to repeat last f or t          #",
+    "#                                        #",
+    "#  S                                     #",
+    "#                                        #",
+    "##########################################",
+    "#                                        #",
+    "#  a a a a a a a a a   fa then ;;;;      #",
+    "#                                        #",
+    "#                                  >     #",
+    "#                                        #",
+    "##########################################",
+  ]
+},
+];
+
+// ── parser ────────────────────────────────────────────────────────────────────
+function parseMap(src){
+  const rows=[]; let ps={x:1,y:1}; const pkups=[],blds=[]; let ex=null;
+  src.forEach((line,row)=>{
+    const cells=[];
+    for(let col=0;col<line.length;col++){
+      const ch=line[col]; let type='floor';
+      if(ch==='#'){ type='wall'; }
+      else if(ch==='@'){ ps={x:col,y:row}; }
+      else if(ch==='o'){ type='boulder'; blds.push({x:col,y:row}); }
+      else if(ch==='>'){ type='exit'; ex={x:col,y:row}; }
+      else if(PICKUP_MAP[ch]!==undefined){ type='pickup'; pkups.push({x:col,y:row,ch,cmd:PICKUP_MAP[ch],collected:false}); }
+      const disp=(ch==='@'||PICKUP_MAP[ch]!==undefined)?'':ch;
+      cells.push({type,ch:disp});
+    }
+    rows.push(cells);
+  });
+  return {rows,playerStart:ps,pickups:pkups,boulders:blds,exit:ex};
+}
+
+// ── state ─────────────────────────────────────────────────────────────────────
+let curLvl=0, level=parseMap(LEVELS[0].map);
+let bGrid=new Set();
+function rebuildBGrid(){ bGrid.clear(); state.boulders.forEach(b=>bGrid.add(`${b.x},${b.y}`)); }
+
+const state={
+  player:{x:1,y:1}, render:{x:1,y:1},
+  commands:new Set(['h','j','k','l']),
+  pickups:[], boulders:[], exit:null,
+  won:false, pending:null, lastFind:null, tick:0,
+};
+
+function loadLevel(idx){
+  const def=LEVELS[idx];
+  level=parseMap(def.map);
+  state.player={...level.playerStart};
+  state.render={...level.playerStart};
+  def.start.forEach(c=>state.commands.add(c));
+  state.pickups=level.pickups.map(p=>({...p}));
+  state.boulders=level.boulders.map(b=>({...b}));
+  state.exit=level.exit;
+  state.won=false; state.pending=null;
+  rebuildBGrid();
+  document.getElementById('level-name').textContent=def.name;
+  setMsg(def.intro); updateInv();
+}
+
+// ── terrain ───────────────────────────────────────────────────────────────────
+function cellAt(x,y){ const r=level.rows[y]; if(!r) return {type:'wall',ch:'#'}; return r[x]||{type:'wall',ch:'#'}; }
+function isBoulder(x,y){ return bGrid.has(`${x},${y}`); }
+function isBlocked(x,y){ return cellAt(x,y).type==='wall'||isBoulder(x,y); }
+function rowLen(y){ return level.rows[y]?level.rows[y].length-1:0; }
+function colLen(){ return level.rows.length-1; }
+
+// ── motions (all clamped — no dead jumps) ─────────────────────────────────────
+function wordRight(x,y){
+  const max=rowLen(y); let nx=x+1;
+  while(nx<=max&&!isBlocked(nx,y)&&cellAt(nx,y).ch===' ') nx++;
+  while(nx<=max&&!isBlocked(nx,y)&&cellAt(nx,y).ch!==' ') nx++;
+  while(nx<=max&&!isBlocked(nx,y)&&cellAt(nx,y).ch===' ') nx++;
+  while(nx>x&&isBlocked(nx,y)) nx--;
+  return nx;
+}
+function wordEnd(x,y){
+  const max=rowLen(y); let nx=x+1;
+  while(nx<=max&&!isBlocked(nx,y)&&cellAt(nx,y).ch===' ') nx++;
+  while(nx+1<=max&&!isBlocked(nx+1,y)&&cellAt(nx+1,y).ch!==' ') nx++;
+  while(nx>x&&isBlocked(nx,y)) nx--;
+  return nx;
+}
+function wordBack(x,y){
+  let nx=x-1; if(nx<0) return x;
+  while(nx>0&&!isBlocked(nx,y)&&cellAt(nx,y).ch===' ') nx--;
+  while(nx-1>=0&&!isBlocked(nx-1,y)&&cellAt(nx-1,y).ch!==' ') nx--;
+  while(nx<x&&isBlocked(nx,y)) nx++;
+  return nx;
+}
+function wordDown(x,y){
+  const max=colLen(); let ny=y+1;
+  while(ny<=max&&!isBlocked(x,ny)&&cellAt(x,ny).ch===' ') ny++;
+  while(ny<=max&&!isBlocked(x,ny)&&cellAt(x,ny).ch!==' ') ny++;
+  while(ny<=max&&!isBlocked(x,ny)&&cellAt(x,ny).ch===' ') ny++;
+  while(ny>y&&isBlocked(x,ny)) ny--;
+  return ny;
+}
+function wordEndDown(x,y){
+  const max=colLen(); let ny=y+1;
+  while(ny<=max&&!isBlocked(x,ny)&&cellAt(x,ny).ch===' ') ny++;
+  while(ny+1<=max&&!isBlocked(x,ny+1)&&cellAt(x,ny+1).ch!==' ') ny++;
+  while(ny>y&&isBlocked(x,ny)) ny--;
+  return ny;
+}
+function wordUp(x,y){
+  let ny=y-1; if(ny<0) return y;
+  while(ny>0&&!isBlocked(x,ny)&&cellAt(x,ny).ch===' ') ny--;
+  while(ny-1>=0&&!isBlocked(x,ny-1)&&cellAt(x,ny-1).ch!==' ') ny--;
+  while(ny<y&&isBlocked(x,ny)) ny++;
+  return ny;
+}
+function findChar(x,y,ch){
+  const max=rowLen(y);
+  for(let nx=x+1;nx<=max;nx++){ if(isBlocked(nx,y)) break; if(cellAt(nx,y).ch===ch) return nx; }
+  return x;
+}
+function findBefore(x,y,ch){
+  const max=rowLen(y);
+  for(let nx=x+1;nx<=max;nx++){ if(isBlocked(nx,y)) break; if(cellAt(nx,y).ch===ch) return Math.max(x,nx-1); }
+  return x;
+}
+function lineStart(y){ const max=rowLen(y); for(let nx=0;nx<=max;nx++) if(!isBlocked(nx,y)) return nx; return 0; }
+function lineEnd(y){ const max=rowLen(y); for(let nx=max;nx>=0;nx--) if(!isBlocked(nx,y)) return nx; return max; }
+
+// ── movement ──────────────────────────────────────────────────────────────────
+function tryMove(nx,ny){
+  if(nx<0||ny<0) return;
+  if(cellAt(nx,ny).type==='wall') return;
+  if(isBoulder(nx,ny)){
+    setMsg(state.commands.has('w')
+      ?'A boulder blocks you. Use <b>w</b> or <b>e</b> to jump over it.'
+      :'A boulder blocks your path. Find <b>w</b> to jump over boulders.');
+    return;
+  }
+  commit(nx,ny);
+}
+function jumpTo(nx,ny){ if(!isBlocked(nx,ny)) commit(nx,ny); }
+function commit(nx,ny){
+  state.player.x=nx; state.player.y=ny;
+  checkPickup(); checkExit();
+}
+function checkPickup(){
+  const {x,y}=state.player;
+  const p=state.pickups.find(p=>p.x===x&&p.y===y&&!p.collected);
+  if(!p) return;
+  p.collected=true; state.commands.add(p.cmd); updateInv();
+  const M={w:'✓ Got <b>w</b> — next word start.',e:'✓ Got <b>e</b> — word end.',
+    b:'✓ Got <b>b</b> — back a word.',f:'✓ Got <b>f</b> — then type a char to leap to it (line-of-sight).',
+    t:'✓ Got <b>t</b> — then type a char to land just before it.',
+    ';':'✓ Got <b>;</b> — repeats last f or t.',
+    W:'✓ Got <b>W</b> — jumps down a column-word.',E:'✓ Got <b>E</b> — column-word end.',
+    B:'✓ Got <b>B</b> — column-word back up.','0':'✓ Got <b>0</b> — line start.','$':'✓ Got <b>$</b> — line end.'};
+  setMsg(M[p.cmd]||`✓ Got <b>${p.cmd}</b>`);
+}
+function checkExit(){
+  const {x,y}=state.player;
+  if(!state.exit||x!==state.exit.x||y!==state.exit.y) return;
+  state.won=true;
+  const last=curLvl>=LEVELS.length-1;
+  setMsg(last?'🎉 <b>All levels complete!</b> Commands: '+[...state.commands].join(' ')
+    :`✓ <b>Level ${curLvl+1} complete!</b> Press <b>Enter</b> to continue.`);
+}
+function setMsg(h){ document.getElementById('msg').innerHTML=h; }
+function updateInv(){ document.getElementById('inv-list').textContent=[...state.commands].join('  '); }
+
+// ── input ─────────────────────────────────────────────────────────────────────
+window.addEventListener('keydown',e=>{
+  const key=e.key;
+  if(state.won&&key==='Enter'){
+    e.preventDefault();
+    const nxt=curLvl+1;
+    if(nxt<LEVELS.length){ curLvl=nxt; loadLevel(curLvl); }
+    return;
+  }
+  if(state.won) return;
+
+  // resolve pending f/t
+  if(state.pending){
+    e.preventDefault();
+    if(key.length===1){
+      const {x,y}=state.player;
+      const nx=state.pending==='f'?findChar(x,y,key):findBefore(x,y,key);
+      state.lastFind={type:state.pending,char:key};
+      jumpTo(nx,y);
+    }
+    state.pending=null; return;
+  }
+
+  const {x,y}=state.player;
+  const has=c=>state.commands.has(c);
+
+  if(key==='h'&&has('h')){e.preventDefault();tryMove(x-1,y);return;}
+  if(key==='l'&&has('l')){e.preventDefault();tryMove(x+1,y);return;}
+  if(key==='k'&&has('k')){e.preventDefault();tryMove(x,y-1);return;}
+  if(key==='j'&&has('j')){e.preventDefault();tryMove(x,y+1);return;}
+
+  if(key==='w'&&has('w')){e.preventDefault();jumpTo(wordRight(x,y),y);return;}
+  if(key==='e'&&has('e')){e.preventDefault();jumpTo(wordEnd(x,y),y);return;}
+  if(key==='b'&&has('b')){e.preventDefault();jumpTo(wordBack(x,y),y);return;}
+
+  if(key==='W'&&has('W')){e.preventDefault();jumpTo(x,wordDown(x,y));return;}
+  if(key==='E'&&has('E')){e.preventDefault();jumpTo(x,wordEndDown(x,y));return;}
+  if(key==='B'&&has('B')){e.preventDefault();jumpTo(x,wordUp(x,y));return;}
+
+  if(key==='f'&&has('f')){e.preventDefault();state.pending='f';setMsg('<b>f</b> — type a character to leap to it.');return;}
+  if(key==='t'&&has('t')){e.preventDefault();state.pending='t';setMsg('<b>t</b> — type a character to land just before it.');return;}
+
+  if(key===';'&&has(';')&&state.lastFind){
+    e.preventDefault();
+    const {type,char}=state.lastFind;
+    jumpTo(type==='f'?findChar(x,y,char):findBefore(x,y,char),y); return;
+  }
+
+  if(key==='0'&&has('0')){e.preventDefault();jumpTo(lineStart(y),y);return;}
+  if(key==='$'&&has('$')){e.preventDefault();jumpTo(lineEnd(y),y);return;}
+
+  const ALL=new Set(['h','j','k','l','w','e','b','f','t',';','W','E','B','0','$']);
+  if(ALL.has(key)&&!has(key)) setMsg(`You don't have <b>${key}</b> yet. Find the glowing letter on the map.`);
+});
+
+// ── renderer ──────────────────────────────────────────────────────────────────
+function lerp(a,b,t){return a+(b-a)*t;}
+
+function w2s(wx,wy){
+  const cx=Math.floor(W/2)-state.render.x*CW;
+  const cy=Math.floor(H/2)-state.render.y*CH;
+  return {sx:wx*CW+cx, sy:wy*CH+cy};
+}
+
+function draw(){
+  state.tick++;
+  const blink=Math.floor(state.tick/20)%2===0;
+  const t=state.tick*0.04;
+
+  state.render.x=lerp(state.render.x,state.player.x,LERP_K);
+  state.render.y=lerp(state.render.y,state.player.y,LERP_K);
+
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+
+  // tiles
+  level.rows.forEach((row,ry)=>{
+    row.forEach((cell,cx2)=>{
+      const {sx,sy}=w2s(cx2,ry);
+      if(sx<-CW*2||sx>W+CW||sy<-CH*2||sy>H+CH) return;
+      if(cell.type==='wall'){
+        ctx.fillStyle='rgba(0,255,136,0.55)'; ctx.font=FONT;
+        ctx.fillText('#',sx,sy+CH-4);
+      } else if(cell.type==='exit'){
+        const p=0.5+0.5*Math.sin(t*2);
+        ctx.shadowColor='#ffaa00'; ctx.shadowBlur=12*p;
+        ctx.fillStyle=`rgba(255,170,0,${0.6+p*0.4})`; ctx.font=FONTB;
+        ctx.fillText('>',sx,sy+CH-4); ctx.shadowBlur=0;
+      } else {
+        if((cx2+ry)%6===0){ ctx.fillStyle='rgba(0,255,136,0.06)'; ctx.fillRect(sx+CW/2-1,sy+CH/2-1,2,2); }
+        if(cell.ch&&cell.ch.trim()){
+          ctx.fillStyle='rgba(0,255,136,0.15)'; ctx.font=FONT;
+          ctx.fillText(cell.ch,sx,sy+CH-4);
+        }
+      }
+    });
+  });
+
+  // boulders
+  state.boulders.forEach(b=>{
+    const {sx,sy}=w2s(b.x,b.y);
+    if(sx<-CW*2||sx>W+CW||sy<-CH*2||sy>H+CH) return;
+    const bx=sx+CW/2,by=sy+CH/2,r=Math.min(CW,CH)*0.38;
+    const g=ctx.createRadialGradient(bx,by,0,bx,by,r*2.2);
+    g.addColorStop(0,'rgba(255,80,80,0.22)'); g.addColorStop(1,'rgba(255,80,80,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(bx,by,r*2.2,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#ff4444'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(bx,by,r,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle='rgba(255,60,60,0.12)';
+    ctx.beginPath(); ctx.arc(bx,by,r,0,Math.PI*2); ctx.fill();
+  });
+
+  // pickups
+  state.pickups.forEach(p=>{
+    if(p.collected) return;
+    const {sx,sy}=w2s(p.x,p.y);
+    if(sx<-CW*2||sx>W+CW||sy<-CH*2||sy>H+CH) return;
+    const pulse=0.5+0.5*Math.sin(t*3+p.x);
+    const g=ctx.createRadialGradient(sx+CW/2,sy+CH/2,0,sx+CW/2,sy+CH/2,CW*1.8);
+    g.addColorStop(0,`rgba(0,255,136,${0.28*pulse})`); g.addColorStop(1,'rgba(0,255,136,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(sx+CW/2,sy+CH/2,CW*1.8,0,Math.PI*2); ctx.fill();
+    ctx.shadowColor='#00ff88'; ctx.shadowBlur=10+8*pulse;
+    ctx.fillStyle=`rgba(0,255,136,${0.7+0.3*pulse})`; ctx.font=FONTB;
+    ctx.fillText(p.cmd,sx,sy+CH-4); ctx.shadowBlur=0;
+  });
+
+  // player (always at screen center — camera follows)
+  {
+    const pulse=0.5+0.5*Math.sin(t*1.5);
+    const px=Math.floor(W/2), py=Math.floor(H/2);
+    const g=ctx.createRadialGradient(px,py,0,px,py,CW*2.2);
+    g.addColorStop(0,`rgba(0,255,136,${0.35+0.2*pulse})`); g.addColorStop(1,'rgba(0,255,136,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(px,py,CW*2.2,0,Math.PI*2); ctx.fill();
+    const rx=px-CW/2, ry=py-CH/2;
+    if(blink){
+      ctx.fillStyle='rgba(0,255,136,0.88)'; ctx.fillRect(rx,ry+2,CW,CH-4);
+      ctx.fillStyle='#000'; ctx.font=`bold ${CH-4}px "Courier New"`; ctx.fillText('@',rx,ry+CH-5);
+    } else {
+      ctx.strokeStyle='#00ff88'; ctx.lineWidth=1.5; ctx.strokeRect(rx+0.5,ry+2.5,CW-1,CH-5);
+      ctx.fillStyle='#00ff88'; ctx.font=`bold ${CH-4}px "Courier New"`; ctx.fillText('@',rx,ry+CH-5);
+    }
+  }
+
+  // pending indicator
+  if(state.pending){
+    ctx.fillStyle='rgba(255,170,0,0.9)'; ctx.font='bold 13px "Courier New"';
+    ctx.textAlign='right'; ctx.fillText(`${state.pending} → ?`,W-16,32); ctx.textAlign='left';
+  }
+
+  // win overlay
+  if(state.won){
+    ctx.fillStyle='rgba(0,0,0,0.78)'; ctx.fillRect(0,0,W,H);
+    const last=curLvl>=LEVELS.length-1;
+    ctx.textAlign='center';
+    ctx.fillStyle='#00ff88'; ctx.shadowColor='#00ff88'; ctx.shadowBlur=26;
+    ctx.font='bold 28px "Courier New"';
+    ctx.fillText(last?'ALL LEVELS COMPLETE':`LEVEL ${curLvl+1} COMPLETE`,W/2,H/2-22);
+    ctx.shadowBlur=0;
+    ctx.fillStyle='rgba(0,255,136,0.4)'; ctx.font='12px "Courier New"';
+    ctx.fillText('commands: '+[...state.commands].join('  '),W/2,H/2+8);
+    if(!last){
+      const np=0.5+0.5*Math.sin(t*2.5);
+      ctx.fillStyle=`rgba(255,170,0,${0.55+np*0.45})`; ctx.font='13px "Courier New"';
+      ctx.fillText('press Enter to continue →',W/2,H/2+34);
+    }
+    ctx.textAlign='left';
+  }
+
+  requestAnimationFrame(draw);
+}
+
+loadLevel(0);
+draw();
+})();
+</script>
+</body>
+</html>

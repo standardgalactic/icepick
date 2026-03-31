@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ICEPICK — 2D</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #000;
+    color: #00ff88;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  #top-bar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 16px;
+    border-bottom: 1px solid rgba(0,255,136,0.15);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    background: #000;
+  }
+  #top-left  { color: rgba(0,255,136,0.9); text-shadow: 0 0 8px #00ff88; }
+  #top-right { color: #ffaa00; }
+  #canvas-wrap {
+    flex: 1 1 auto;
+    position: relative;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+  }
+  #bottom-bar {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 7px 16px;
+    border-top: 1px solid rgba(0,255,136,0.15);
+    background: #000;
+    font-size: 11px;
+    min-height: 44px;
+  }
+  #msg { color: #00ff88; flex: 1; line-height: 1.5; }
+  #inventory {
+    display: flex;
+    gap: 8px;
+    margin-left: 24px;
+  }
+  .cmd-chip {
+    border: 1px solid rgba(0,255,136,0.4);
+    padding: 2px 7px;
+    border-radius: 2px;
+    font-size: 11px;
+    color: #00ff88;
+    text-shadow: 0 0 6px #00ff88;
+    background: rgba(0,255,136,0.06);
+  }
+  /* CRT overlay */
+  #canvas-wrap::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0,255,100,0.025) 0px,
+      rgba(0,255,100,0.025) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+  }
+  #canvas-wrap::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center,
+      transparent 55%, rgba(0,0,0,0.65) 100%);
+    pointer-events: none;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <div id="top-left">ICEPICK &nbsp;·&nbsp; <span id="level-name">Level 1 — hjkl</span></div>
+  <div id="top-right"><span id="inv-label">commands: </span><span id="inv-list">h j k l</span></div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="screen"></canvas>
+</div>
+
+<div id="bottom-bar">
+  <div id="msg">Walk with <b>h j k l</b>. Find the glowing letters to collect new commands.</div>
+  <div id="inventory"></div>
+</div>
+
+<script>
+(function() {
+"use strict";
+
+// ── canvas ────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+
+let W, H;
+function resize() {
+  const r = wrap.getBoundingClientRect();
+  W = canvas.width  = Math.floor(r.width);
+  H = canvas.height = Math.floor(r.height);
+}
+window.addEventListener('resize', () => { resize(); });
+resize();
+
+// ── constants ─────────────────────────────────────────────────────────────────
+const CW = 12;   // cell width  (px)
+const CH = 20;   // cell height (px)
+const FONT = `${CH - 4}px "Courier New"`;
+
+// ── level map ─────────────────────────────────────────────────────────────────
+// Legend:
+//   space  = floor (walkable)
+//   #      = wall
+//   .      = floor (decorative dot)
+//   @      = player start
+//   o      = boulder (blocks movement unless you have 'w' or 'e')
+//   w e b  = command pickup (glowing letter on floor)
+//   >      = level exit (reach to win)
+
+const MAP_SRC = [
+  "########################################",
+  "#                                      #",
+  "#  @    move with h j k l              #",
+  "#                                      #",
+  "################  #####################",
+  "#                                      #",
+  "#  navigate the corridor               #",
+  "#                                      #",
+  "######################  ###############",
+  "#                                      #",
+  "#  almost there...                     #",
+  "#                                      #",
+  "##########  ###########################",
+  "#                                      #",
+  "#  pick up [w] to jump over boulders   #",
+  "#                                      #",
+  "#       w                              #",
+  "#                                      #",
+  "########################################",
+  "#                                      #",
+  "#  o o o o   jump with w               #",
+  "#                                      #",
+  "#  o o o o   e jumps to end of word    #",
+  "#                                      #",
+  "#       e                              #",
+  "#                                      #",
+  "########################################",
+  "#                                      #",
+  "#  o o o o o o o                       #",
+  "#                                      #",
+  "#  good. now reach the exit            #",
+  "#                                      #",
+  "#                               >      #",
+  "#                                      #",
+  "########################################",
+];
+
+// Parse map into a 2D array of cell objects
+function parseMap(src) {
+  const rows = [];
+  let playerStart = { x: 1, y: 1 };
+  let pickups = [];
+  let boulders = [];
+  let exit = null;
+
+  src.forEach((line, row) => {
+    const cells = [];
+    for (let col = 0; col < line.length; col++) {
+      const ch = line[col];
+      let type = 'floor';
+      if (ch === '#') type = 'wall';
+      else if (ch === '@') { type = 'floor'; playerStart = { x: col, y: row }; }
+      else if (ch === 'o') { type = 'boulder'; boulders.push({ x: col, y: row }); }
+      else if (ch === '>') { type = 'exit'; exit = { x: col, y: row }; }
+      else if ('web'.includes(ch) && ch !== ' ') {
+        type = 'pickup';
+        pickups.push({ x: col, y: row, cmd: ch, collected: false });
+      }
+      cells.push({ type, ch: ch === '@' || 'web'.includes(ch) ? ' ' : ch });
+    }
+    rows.push(cells);
+  });
+
+  return { rows, playerStart, pickups, boulders, exit };
+}
+
+const level = parseMap(MAP_SRC);
+
+// ── state ─────────────────────────────────────────────────────────────────────
+const state = {
+  player: { ...level.playerStart },
+  commands: new Set(['h', 'j', 'k', 'l']),
+  pickups: level.pickups.map(p => ({ ...p })),
+  boulders: level.boulders.map(b => ({ ...b })),
+  exit: level.exit,
+  won: false,
+  vimPending: null,
+  message: 'Walk with <b>h j k l</b>. Find the glowing letters to collect new commands.',
+  tick: 0,
+};
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function cellAt(x, y) {
+  const row = level.rows[y];
+  if (!row) return { type: 'wall', ch: '#' };
+  return row[x] || { type: 'wall', ch: '#' };
+}
+
+function isBoulder(x, y) {
+  return state.boulders.some(b => b.x === x && b.y === y);
+}
+
+function isPickup(x, y) {
+  return state.pickups.find(p => p.x === x && p.y === y && !p.collected);
+}
+
+function isWalkable(x, y) {
+  const cell = cellAt(x, y);
+  if (cell.type === 'wall') return false;
+  if (isBoulder(x, y)) return false;
+  return true;
+}
+
+// "word" navigation: find next word-start to the right on same row
+// Words are separated by spaces. Boulders count as word boundaries.
+function wordRight(x, y) {
+  // scan right, skip current word chars, then skip spaces, land on next non-space
+  let nx = x + 1;
+  const maxX = level.rows[y] ? level.rows[y].length - 1 : x;
+  // skip spaces
+  while (nx <= maxX && cellAt(nx, y).ch === ' ' && !isBoulder(nx, y)) nx++;
+  // skip word chars until space or boulder
+  while (nx <= maxX && cellAt(nx, y).ch !== ' ' && cellAt(nx, y).type !== 'wall' && !isBoulder(nx, y)) nx++;
+  // skip spaces again
+  while (nx <= maxX && cellAt(nx, y).ch === ' ' && !isBoulder(nx, y)) nx++;
+  return Math.min(nx, maxX);
+}
+
+function wordEnd(x, y) {
+  // move to end of current or next word
+  let nx = x + 1;
+  const maxX = level.rows[y] ? level.rows[y].length - 1 : x;
+  // skip spaces
+  while (nx <= maxX && cellAt(nx, y).ch === ' ' && !isBoulder(nx, y)) nx++;
+  // move to end of word
+  while (nx + 1 <= maxX && cellAt(nx+1, y).ch !== ' ' && cellAt(nx+1, y).type !== 'wall' && !isBoulder(nx+1, y)) nx++;
+  return Math.min(nx, maxX);
+}
+
+function wordBack(x, y) {
+  let nx = x - 1;
+  if (nx < 0) return 0;
+  // skip spaces
+  while (nx > 0 && cellAt(nx, y).ch === ' ' && !isBoulder(nx, y)) nx--;
+  // move to start of word
+  while (nx - 1 >= 0 && cellAt(nx-1, y).ch !== ' ' && cellAt(nx-1, y).type !== 'wall' && !isBoulder(nx-1, y)) nx--;
+  return Math.max(0, nx);
+}
+
+// ── movement ──────────────────────────────────────────────────────────────────
+function tryMove(nx, ny) {
+  if (nx < 0 || ny < 0) return;
+  if (cellAt(nx, ny).type === 'wall') return;
+  if (isBoulder(nx, ny)) {
+    setMsg('A boulder blocks your path. You need <b>w</b> to jump over it.');
+    return;
+  }
+  state.player.x = nx;
+  state.player.y = ny;
+  checkPickup();
+  checkExit();
+}
+
+function checkPickup() {
+  const { x, y } = state.player;
+  const p = isPickup(x, y);
+  if (p) {
+    p.collected = true;
+    state.commands.add(p.cmd);
+    updateInventory();
+
+    const msgs = {
+      w: '✓ Collected <b>w</b> — jump to next word start. Boulders are word boundaries!',
+      e: '✓ Collected <b>e</b> — jump to word end. Clears longer boulder runs.',
+      b: '✓ Collected <b>b</b> — jump back one word.',
+    };
+    setMsg(msgs[p.cmd] || `Collected <b>${p.cmd}</b>`);
+  }
+}
+
+function checkExit() {
+  const { x, y } = state.player;
+  if (state.exit && x === state.exit.x && y === state.exit.y) {
+    state.won = true;
+    setMsg('🎉 <b>Level complete!</b> You navigated the world with hjkl, w, and e.');
+  }
+}
+
+function setMsg(html) {
+  document.getElementById('msg').innerHTML = html;
+  state.message = html;
+}
+
+function updateInventory() {
+  document.getElementById('inv-list').textContent =
+    [...state.commands].join('  ');
+}
+
+// ── input ─────────────────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  if (state.won) return;
+
+  const key = e.key;
+  const { x, y } = state.player;
+
+  // Movement — only if command is collected
+  if (key === 'h' && state.commands.has('h')) { e.preventDefault(); tryMove(x - 1, y); }
+  if (key === 'l' && state.commands.has('l')) { e.preventDefault(); tryMove(x + 1, y); }
+  if (key === 'k' && state.commands.has('k')) { e.preventDefault(); tryMove(x, y - 1); }
+  if (key === 'j' && state.commands.has('j')) { e.preventDefault(); tryMove(x, y + 1); }
+
+  // Word motions — only if collected
+  if (key === 'w' && state.commands.has('w')) {
+    e.preventDefault();
+    const nx = wordRight(x, y);
+    if (cellAt(nx, y).type !== 'wall') {
+      state.player.x = nx;
+      checkPickup(); checkExit();
+    }
+  }
+  if (key === 'e' && state.commands.has('e')) {
+    e.preventDefault();
+    const nx = wordEnd(x, y);
+    if (cellAt(nx, y).type !== 'wall') {
+      state.player.x = nx;
+      checkPickup(); checkExit();
+    }
+  }
+  if (key === 'b' && state.commands.has('b')) {
+    e.preventDefault();
+    const nx = wordBack(x, y);
+    if (cellAt(nx, y).type !== 'wall') {
+      state.player.x = nx;
+      checkPickup(); checkExit();
+    }
+  }
+
+  // Unknown command hint
+  if ('webWEB'.includes(key) && !state.commands.has(key.toLowerCase())) {
+    setMsg(`You don't have <b>${key}</b> yet. Find the glowing <b>${key.toLowerCase()}</b> on the map.`);
+  }
+});
+
+// ── renderer ──────────────────────────────────────────────────────────────────
+
+// Camera: center on player
+function worldToScreen(wx, wy) {
+  const cx = Math.floor(W / 2) - state.player.x * CW;
+  const cy = Math.floor(H / 2) - state.player.y * CH;
+  return { sx: wx * CW + cx, sy: wy * CH + cy };
+}
+
+function draw() {
+  state.tick++;
+  const blink = Math.floor(state.tick / 20) % 2 === 0;
+  const t = state.tick * 0.04;
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const rows = level.rows;
+  const totalRows = rows.length;
+
+  for (let row = 0; row < totalRows; row++) {
+    const cols = rows[row];
+    for (let col = 0; col < cols.length; col++) {
+      const cell = cols[col];
+      const { sx, sy } = worldToScreen(col, row);
+
+      // Cull off-screen
+      if (sx < -CW * 2 || sx > W + CW || sy < -CH * 2 || sy > H + CH) continue;
+
+      ctx.font = FONT;
+
+      if (cell.type === 'wall') {
+        // Wall glow
+        ctx.fillStyle = 'rgba(0,255,136,0.55)';
+        ctx.fillText('#', sx, sy + CH - 4);
+      } else if (cell.type === 'exit') {
+        // Pulsing exit
+        const pulse = 0.5 + 0.5 * Math.sin(t * 2);
+        ctx.fillStyle = `rgba(255,170,0,${0.6 + pulse * 0.4})`;
+        ctx.font = `bold ${CH - 2}px "Courier New"`;
+        ctx.fillText('>', sx, sy + CH - 4);
+        // Glow ring
+        ctx.shadowColor = '#ffaa00';
+        ctx.shadowBlur = 12 * pulse;
+        ctx.fillText('>', sx, sy + CH - 4);
+        ctx.shadowBlur = 0;
+      } else {
+        // Floor — subtle dot grid
+        if ((col + row) % 6 === 0) {
+          ctx.fillStyle = 'rgba(0,255,136,0.07)';
+          ctx.fillRect(sx + CW/2 - 1, sy + CH/2 - 1, 2, 2);
+        }
+        // Floor text decorations from map
+        if (cell.ch && cell.ch.trim() && cell.ch !== ' ') {
+          ctx.fillStyle = 'rgba(0,255,136,0.18)';
+          ctx.font = FONT;
+          ctx.fillText(cell.ch, sx, sy + CH - 4);
+        }
+      }
+    }
+  }
+
+  // Boulders
+  state.boulders.forEach(b => {
+    const { sx, sy } = worldToScreen(b.x, b.y);
+    if (sx < -CW * 2 || sx > W + CW || sy < -CH * 2 || sy > H + CH) return;
+
+    const cx2 = sx + CW / 2;
+    const cy2 = sy + CH / 2;
+    const r = Math.min(CW, CH) * 0.38;
+
+    // Glow
+    const grd = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, r * 2.2);
+    grd.addColorStop(0, 'rgba(255,80,80,0.25)');
+    grd.addColorStop(1, 'rgba(255,80,80,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Boulder circle
+    ctx.strokeStyle = '#ff4444';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner fill
+    ctx.fillStyle = 'rgba(255,60,60,0.15)';
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Pickups (glowing letters)
+  state.pickups.forEach(p => {
+    if (p.collected) return;
+    const { sx, sy } = worldToScreen(p.x, p.y);
+    if (sx < -CW * 2 || sx > W + CW || sy < -CH * 2 || sy > H + CH) return;
+
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3 + p.x);
+
+    // Glow pool
+    const grd = ctx.createRadialGradient(
+      sx + CW/2, sy + CH/2, 0,
+      sx + CW/2, sy + CH/2, CW * 1.8
+    );
+    grd.addColorStop(0, `rgba(0,255,136,${0.3 * pulse})`);
+    grd.addColorStop(1, 'rgba(0,255,136,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(sx + CW/2, sy + CH/2, CW * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Letter
+    ctx.shadowColor = '#00ff88';
+    ctx.shadowBlur = 10 + 8 * pulse;
+    ctx.fillStyle = `rgba(0,255,136,${0.7 + 0.3 * pulse})`;
+    ctx.font = `bold ${CH - 2}px "Courier New"`;
+    ctx.fillText(p.cmd, sx, sy + CH - 4);
+    ctx.shadowBlur = 0;
+  });
+
+  // Player
+  {
+    const { sx, sy } = worldToScreen(state.player.x, state.player.y);
+    const cx2 = sx + CW / 2;
+    const cy2 = sy + CH / 2;
+
+    // Player glow
+    const pulse = 0.5 + 0.5 * Math.sin(t * 1.5);
+    const grd = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, CW * 2);
+    grd.addColorStop(0, `rgba(0,255,136,${0.4 + 0.2 * pulse})`);
+    grd.addColorStop(1, 'rgba(0,255,136,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(cx2, cy2, CW * 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cursor block (vim style — blinks)
+    if (blink) {
+      ctx.fillStyle = 'rgba(0,255,136,0.85)';
+      ctx.fillRect(sx + 1, sy + 2, CW - 2, CH - 4);
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${CH - 4}px "Courier New"`;
+      ctx.fillText('@', sx + 1, sy + CH - 5);
+    } else {
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx + 1.5, sy + 2.5, CW - 3, CH - 5);
+      ctx.fillStyle = '#00ff88';
+      ctx.font = `bold ${CH - 4}px "Courier New"`;
+      ctx.fillText('@', sx + 1, sy + CH - 5);
+    }
+  }
+
+  // Win overlay
+  if (state.won) {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#00ff88';
+    ctx.shadowColor = '#00ff88';
+    ctx.shadowBlur = 30;
+    ctx.font = `bold 36px "Courier New"`;
+    ctx.fillText('LEVEL COMPLETE', W / 2, H / 2 - 20);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = 'rgba(0,255,136,0.5)';
+    ctx.font = `14px "Courier New"`;
+    ctx.fillText('commands collected: ' + [...state.commands].join('  '), W / 2, H / 2 + 20);
+    ctx.textAlign = 'left';
+  }
+
+  requestAnimationFrame(draw);
+}
+
+updateInventory();
+draw();
+
+})();
+</script>
+</body>
+</html>
